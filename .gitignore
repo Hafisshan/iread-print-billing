@@ -12,6 +12,9 @@ __pycache__/
 # Database file
 *.db
 
+# Environment / secrets
+.env
+
 # OS files
 .DS_Store
 
