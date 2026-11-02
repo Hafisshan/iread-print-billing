@@ -134,16 +134,23 @@ def inr(value):
 
 @app.route("/")
 def index():
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM services WHERE active=1 ORDER BY name")
-            services = cur.fetchall()
-            today = date.today().isoformat()
-            cur.execute("SELECT COALESCE(SUM(total),0) FROM bills WHERE substr(created_at,1,10)=%s", (today,))
-            today_total = cur.fetchone()['coalesce']
-            cur.execute("SELECT COUNT(*) FROM bills WHERE substr(created_at,1,10)=%s", (today,))
-            today_count = cur.fetchone()['count']
-    return render_template("index.html", services=services, today_total=today_total, today_count=today_count)
+    if not DATABASE_URL:
+        return "DATABASE_URL environment variable is missing on Vercel. Please set it in Vercel Project Settings -> Environment Variables.", 500
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM services WHERE active=1 ORDER BY name")
+                services = cur.fetchall()
+                today = date.today().isoformat()
+                cur.execute("SELECT COALESCE(SUM(total),0) AS today_total FROM bills WHERE substr(created_at,1,10)=%s", (today,))
+                row = cur.fetchone()
+                today_total = row['today_total'] if row else 0
+                cur.execute("SELECT COUNT(*) AS today_count FROM bills WHERE substr(created_at,1,10)=%s", (today,))
+                row = cur.fetchone()
+                today_count = row['today_count'] if row else 0
+        return render_template("index.html", services=services, today_total=today_total, today_count=today_count)
+    except Exception as e:
+        return f"Database query error: {str(e)}", 500
 
 @app.post("/create-bill")
 def create_bill():
