@@ -8,11 +8,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 APP_DIR = Path(__file__).resolve().parent
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-local-secret-key")
+
+# For Vercel WSGI
+app.debug = False
 
 DEFAULT_SERVICES = [
     ('Photostat B&W — A4 single side', 2.00, 'bw', 'A4', 1),
@@ -67,56 +70,60 @@ def db():
     return conn
 
 def init_db():
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS services (
-                id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                rate REAL NOT NULL DEFAULT 0,
-                print_type TEXT NOT NULL DEFAULT 'bw',
-                paper_size TEXT NOT NULL DEFAULT 'A4',
-                sheets_per_unit INTEGER NOT NULL DEFAULT 1,
-                active INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS bills (
-                id SERIAL PRIMARY KEY,
-                bill_no TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL,
-                customer TEXT DEFAULT '',
-                payment_method TEXT NOT NULL DEFAULT 'Cash',
-                subtotal REAL NOT NULL,
-                discount REAL NOT NULL DEFAULT 0,
-                total REAL NOT NULL,
-                paid REAL NOT NULL,
-                balance REAL NOT NULL DEFAULT 0,
-                notes TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS bill_items (
-                id SERIAL PRIMARY KEY,
-                bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
-                service_name TEXT NOT NULL,
-                print_type TEXT NOT NULL,
-                paper_size TEXT NOT NULL,
-                quantity INTEGER NOT NULL,
-                pages_per_copy INTEGER NOT NULL DEFAULT 1,
-                sides TEXT NOT NULL DEFAULT 'Single',
-                rate REAL NOT NULL,
-                line_total REAL NOT NULL,
-                paper_sheets INTEGER NOT NULL DEFAULT 0,
-                color_units INTEGER NOT NULL DEFAULT 0
-            );
-            """)
-            # Seed missing services
-            cur.execute("SELECT name FROM services")
-            existing = {row['name'] for row in cur.fetchall()}
-            for service in DEFAULT_SERVICES:
-                if service[0] not in existing:
-                    cur.execute(
-                        "INSERT INTO services(name,rate,print_type,paper_size,sheets_per_unit,active) VALUES(%s,%s,%s,%s,%s,1)",
-                        service
-                    )
-        conn.commit()
+    if not DATABASE_URL:
+        return
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS services (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    rate REAL NOT NULL DEFAULT 0,
+                    print_type TEXT NOT NULL DEFAULT 'bw',
+                    paper_size TEXT NOT NULL DEFAULT 'A4',
+                    sheets_per_unit INTEGER NOT NULL DEFAULT 1,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE TABLE IF NOT EXISTS bills (
+                    id SERIAL PRIMARY KEY,
+                    bill_no TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    customer TEXT DEFAULT '',
+                    payment_method TEXT NOT NULL DEFAULT 'Cash',
+                    subtotal REAL NOT NULL,
+                    discount REAL NOT NULL DEFAULT 0,
+                    total REAL NOT NULL,
+                    paid REAL NOT NULL,
+                    balance REAL NOT NULL DEFAULT 0,
+                    notes TEXT DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS bill_items (
+                    id SERIAL PRIMARY KEY,
+                    bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+                    service_name TEXT NOT NULL,
+                    print_type TEXT NOT NULL,
+                    paper_size TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    pages_per_copy INTEGER NOT NULL DEFAULT 1,
+                    sides TEXT NOT NULL DEFAULT 'Single',
+                    rate REAL NOT NULL,
+                    line_total REAL NOT NULL,
+                    paper_sheets INTEGER NOT NULL DEFAULT 0,
+                    color_units INTEGER NOT NULL DEFAULT 0
+                );
+                """)
+                cur.execute("SELECT name FROM services")
+                existing = {row['name'] for row in cur.fetchall()}
+                for service in DEFAULT_SERVICES:
+                    if service[0] not in existing:
+                        cur.execute(
+                            "INSERT INTO services(name,rate,print_type,paper_size,sheets_per_unit,active) VALUES(%s,%s,%s,%s,%s,1)",
+                            service
+                        )
+            conn.commit()
+    except Exception as e:
+        print(f"init_db skipped or failed: {e}")
 
 def money(v):
     return round(float(v or 0), 2)
