@@ -158,19 +158,28 @@ def index():
 
 @app.post("/create-bill")
 def create_bill():
-    names      = request.form.getlist("item_service[]")
-    quantities = request.form.getlist("item_qty[]")
-    rates      = request.form.getlist("item_rate[]")
-    pages      = request.form.getlist("item_pages[]")
-    sides_list = request.form.getlist("item_sides[]")
-    customer   = request.form.get("customer", "").strip()
-    payment    = request.form.get("payment_method", "Cash")
-    discount   = money(request.form.get("discount", 0))
-    paid_input = request.form.get("paid", "")
-    notes      = request.form.get("notes", "").strip()
+    names        = request.form.getlist("item_service[]")
+    custom_names = request.form.getlist("item_name[]")
+    quantities   = request.form.getlist("item_qty[]")
+    rates        = request.form.getlist("item_rate[]")
+    pages        = request.form.getlist("item_pages[]")
+    sides_list   = request.form.getlist("item_sides[]")
+    types_list   = request.form.getlist("item_type[]")
+    sizes_list   = request.form.getlist("item_size[]")
+    customer     = request.form.get("customer", "").strip()
+    payment      = request.form.get("payment_method", "Cash")
+    discount     = money(request.form.get("discount", 0))
+    paid_input   = request.form.get("paid", "")
+    notes        = request.form.get("notes", "").strip()
 
     items = []
     subtotal = 0.0
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM services")
+            service_map = {s["id"]: s for s in cur.fetchall()}
+
     for i, service_id in enumerate(names):
         if not service_id:
             continue
@@ -178,29 +187,47 @@ def create_bill():
             qty            = int(quantities[i])
             pages_per_copy = max(1, int(pages[i] or 1))
             rate           = money(rates[i])
-            service_id_int = int(service_id)
         except (ValueError, IndexError):
             continue
         if qty <= 0:
             continue
-        with db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM services WHERE id=%s AND active=1", (service_id_int,))
-                service = cur.fetchone()
-        if not service:
+
+        sides = sides_list[i] if i < len(sides_list) else "Single"
+        custom_name = custom_names[i].strip() if i < len(custom_names) and custom_names[i].strip() else ""
+        custom_type = types_list[i].strip() if i < len(types_list) and types_list[i].strip() else "bw"
+        custom_size = sizes_list[i].strip() if i < len(sizes_list) and sizes_list[i].strip() else "A4"
+
+        try:
+            service_id_int = int(service_id)
+            service = service_map.get(service_id_int)
+        except ValueError:
+            service = None
+
+        if service:
+            s_name = custom_name if custom_name else service["name"]
+            s_type = service["print_type"]
+            s_size = service["paper_size"]
+            sheets_per_unit = service["sheets_per_unit"]
+        elif custom_name:
+            s_name = custom_name
+            s_type = custom_type
+            s_size = custom_size
+            sheets_per_unit = 1 if s_type in ("bw", "color", "photo") else 0
+        else:
             continue
-        sides      = sides_list[i] if i < len(sides_list) else "Single"
+
         line_total = money(qty * pages_per_copy * rate)
-        color_units = qty * pages_per_copy if service["print_type"] in ("color", "photo") else 0
-        if service["sheets_per_unit"] == 0:
+        color_units = qty * pages_per_copy if s_type in ("color", "photo") else 0
+        if sheets_per_unit == 0:
             sheets = 0
         elif sides.lower().startswith("double"):
             sheets = qty * ((pages_per_copy + 1) // 2)
         else:
             sheets = qty * pages_per_copy
+
         items.append({
-            "service_name": service["name"], "print_type": service["print_type"],
-            "paper_size": service["paper_size"], "quantity": qty,
+            "service_name": s_name, "print_type": s_type,
+            "paper_size": s_size, "quantity": qty,
             "pages_per_copy": pages_per_copy, "sides": sides, "rate": rate,
             "line_total": line_total, "paper_sheets": sheets, "color_units": color_units
         })
@@ -323,8 +350,8 @@ def services():
                     try:
                         rate           = money(request.form.get("rate", 0))
                         print_type     = request.form.get("print_type", "bw")
-                        paper_size     = request.form.get("paper_size", "A4")
-                        sheets_per_unit = max(1, int(request.form.get("sheets_per_unit", 1)))
+                        paper_size     = request.form.get("paper_size", "A4").strip() or "A4"
+                        sheets_per_unit = max(0, int(request.form.get("sheets_per_unit", 1)))
                         if not name or rate < 0:
                             raise ValueError()
                         cur.execute(
@@ -340,13 +367,38 @@ def services():
                         flash("Check the service name, rate and sheet count.", "error")
 
                 elif action == "update":
-                    for sid, rate in zip(request.form.getlist("service_id[]"), request.form.getlist("service_rate[]")):
+                    ids   = request.form.getlist("service_id[]")
+                    names = request.form.getlist("service_name[]")
+                    rates = request.form.getlist("service_rate[]")
+                    types = request.form.getlist("service_type[]")
+                    sizes = request.form.getlist("service_size[]")
+                    updated_count = 0
+                    for sid, name, rate, ptype, psize in zip(ids, names, rates, types, sizes):
                         try:
-                            cur.execute("UPDATE services SET rate=%s WHERE id=%s", (max(0, money(rate)), int(sid)))
-                        except ValueError:
-                            pass
+                            clean_name = name.strip()
+                            clean_rate = max(0, money(rate))
+                            clean_type = ptype.strip() if ptype else "bw"
+                            clean_size = psize.strip() if psize else "A4"
+                            if clean_name:
+                                cur.execute(
+                                    "UPDATE services SET name=%s, rate=%s, print_type=%s, paper_size=%s WHERE id=%s",
+                                    (clean_name, clean_rate, clean_type, clean_size, int(sid))
+                                )
+                                updated_count += 1
+                        except Exception as e:
+                            print(f"Error updating service {sid}: {e}")
                     conn.commit()
-                    flash("Rates updated.", "success")
+                    flash(f"Updated {updated_count} item(s).", "success")
+
+                elif action == "delete":
+                    try:
+                        sid = int(request.form.get("service_id"))
+                        cur.execute("DELETE FROM services WHERE id=%s", (sid,))
+                        conn.commit()
+                        flash("Item removed successfully.", "success")
+                    except Exception as e:
+                        conn.rollback()
+                        flash(f"Error removing item: {e}", "error")
 
                 elif action == "toggle":
                     sid = int(request.form.get("service_id"))
