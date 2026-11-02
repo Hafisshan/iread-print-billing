@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Iread Print Billing{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><div class="brandmark">I</div><div><strong>Iread</strong><span>Photostat & Color Printing</span></div></div>
+  <nav>
+    <a href="{{ url_for('index') }}">New Bill</a>
+    <a href="{{ url_for('history') }}">Bill History</a>
+    <a href="{{ url_for('reports') }}">Reports</a>
+    <a href="{{ url_for('services') }}">Price List</a>
+  </nav>
+</header>
+<main class="container">
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endif %}
+{% endwith %}
+{% block content %}{% endblock %}
+</main>
+<footer class="footer">Iread local billing • Data is stored on this computer</footer>
+</body>
+</html>

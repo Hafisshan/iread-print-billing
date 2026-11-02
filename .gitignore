@@ -1,0 +1,21 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database file
+*.db
+
+# OS files
+.DS_Store
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

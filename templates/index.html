@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}New Bill | Iread{% endblock %}
+{% block content %}
+<div class="pagehead"><div><p class="eyebrow">POINT OF SALE</p><h1>Create a bill</h1><p class="muted">Choose a service, enter copies and pages, then print the receipt.</p></div>
+<div class="stats"><div><span>Today's bills</span><strong>{{ today_count }}</strong></div><div><span>Today's sales</span><strong>{{ today_total|inr }}</strong></div></div></div>
+<form method="post" action="{{ url_for('create_bill') }}" id="billForm">
+<section class="panel">
+<div class="section-title"><h2>Customer & payment</h2></div>
+<div class="formgrid">
+<label>Customer name (optional)<input name="customer" placeholder="Walk-in customer"></label>
+<label>Payment method<select name="payment_method"><option>Cash</option><option>UPI</option><option>Card</option><option>Credit</option><option>Other</option></select></label>
+<label>Discount (₹)<input type="number" min="0" step="0.01" name="discount" id="discount" value="0"></label>
+<label>Amount received (₹)<input type="number" min="0" step="0.01" name="paid" id="paid" placeholder="Leave blank for full payment"></label>
+</div>
+</section>
+<section class="panel">
+<div class="section-title"><h2>Print jobs</h2><button type="button" class="btn secondary" id="addRow">+ Add job</button></div>
+<div class="tablewrap"><table class="jobs"><thead><tr><th>Service</th><th>Copies</th><th>Pages / copy</th><th>Sides</th><th>Rate / page (₹)</th><th>Amount</th><th></th></tr></thead>
+<tbody id="jobRows"></tbody></table></div>
+<div class="hint">Amount = quantity × pages per copy × rate. For first-page/extra-page services, use quantity to enter how many first/extra pages are charged and keep pages per copy at 1.</div>
+</section>
+<section class="panel">
+<label>Notes (optional)<textarea name="notes" rows="2" placeholder="Job details or customer instructions"></textarea></label>
+<div class="checkout"><div class="totals"><div><span>Subtotal</span><strong id="subtotal">₹0.00</strong></div><div><span>Discount</span><strong id="discountView">₹0.00</strong></div><div class="grand"><span>Total</span><strong id="total">₹0.00</strong></div></div>
+<button class="btn primary big" type="submit">Save bill & open receipt</button></div>
+</section>
+</form>
+<template id="rowTemplate">
+<tr class="jobrow">
+<td><select name="item_service[]" class="serviceSelect" required><option value="">Select service…</option>{% for s in services %}<option value="{{ s.id }}" data-rate="{{ s.rate }}" data-type="{{ s.print_type }}" data-size="{{ s.paper_size }}">{{ s.name }} — {{ s.rate|inr }}</option>{% endfor %}</select></td>
+<td><input name="item_qty[]" class="qty" type="number" min="1" value="1" required></td>
+<td><input name="item_pages[]" class="pages" type="number" min="1" value="1" required></td>
+<td><select name="item_sides[]"><option>Single</option><option>Double-sided</option></select></td>
+<td><input name="item_rate[]" class="rate" type="number" min="0" step="0.01" value="0" required></td>
+<td class="lineAmount">₹0.00</td><td><button type="button" class="remove" aria-label="Remove row">×</button></td>
+</tr>
+</template>
+<script>
+const rows = document.getElementById('jobRows');
+const template = document.getElementById('rowTemplate');
+function addRow() {
+  rows.appendChild(template.content.cloneNode(true));
+  const row = rows.lastElementChild;
+  row.querySelector('.serviceSelect').addEventListener('change', e => {
+    const opt = e.target.selectedOptions[0];
+    row.querySelector('.rate').value = opt.dataset.rate || 0;
+    calculate();
+  });
+  row.querySelectorAll('input,select').forEach(el => el.addEventListener('input', calculate));
+  row.querySelector('.remove').addEventListener('click', () => { row.remove(); calculate(); });
+  calculate();
+}
+function fmt(n) { return '₹' + Number(n || 0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function calculate() {
+  let subtotal = 0;
+  document.querySelectorAll('.jobrow').forEach(row => {
+    const qty = Math.max(0, Number(row.querySelector('.qty').value || 0));
+    const pages = Math.max(1, Number(row.querySelector('.pages').value || 1));
+    const rate = Math.max(0, Number(row.querySelector('.rate').value || 0));
+    const amount = qty * pages * rate;
+    row.querySelector('.lineAmount').textContent = fmt(amount);
+    subtotal += amount;
+  });
+  const discount = Math.min(subtotal, Math.max(0, Number(document.getElementById('discount').value || 0)));
+  document.getElementById('subtotal').textContent = fmt(subtotal);
+  document.getElementById('discountView').textContent = fmt(discount);
+  document.getElementById('total').textContent = fmt(subtotal-discount);
+}
+document.getElementById('addRow').addEventListener('click', addRow);
+document.getElementById('discount').addEventListener('input', calculate);
+addRow();
+</script>
+{% endblock %}

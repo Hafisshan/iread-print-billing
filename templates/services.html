@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Price List | Iread{% endblock %}
+{% block content %}
+<div class="pagehead"><div><p class="eyebrow">SETUP</p><h1>Price list</h1><p class="muted">Edit your rates before using this for live billing.</p></div></div>
+<section class="panel"><h2>Add a service</h2><form method="post" class="formgrid"><input type="hidden" name="action" value="add">
+<label>Service name<input name="name" required placeholder="e.g. B&W A4 single side"></label>
+<label>Rate per page / unit (₹)<input type="number" min="0" step="0.01" name="rate" required></label>
+<label>Type<select name="print_type"><option value="bw">Black & white</option><option value="color">Color</option><option value="photo">Photo</option></select></label>
+<label>Paper size<input name="paper_size" value="A4" required></label>
+<label>Sheets per unit<input name="sheets_per_unit" type="number" min="1" value="1"></label>
+<div class="align-end"><button class="btn primary">Add service</button></div>
+</form></section>
+<section class="panel"><h2>Current services</h2><form method="post"><input type="hidden" name="action" value="update"><div class="tablewrap"><table><thead><tr><th>Service</th><th>Type</th><th>Size</th><th>Rate (₹)</th><th>Status</th><th></th></tr></thead><tbody>
+{% for s in services %}<tr><td>{{ s.name }}</td><td>{{ s.print_type }}</td><td>{{ s.paper_size }}</td><td><input class="rate-edit" name="service_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.rate) }}" {% if not s.active %}disabled{% endif %}><input type="hidden" name="service_id[]" value="{{ s.id }}"></td><td>{{ 'Active' if s.active else 'Hidden' }}</td><td><button class="btn tiny secondary" type="submit" formaction="{{ url_for('services') }}" formmethod="post" name="action" value="toggle" onclick="this.form.insertAdjacentHTML('beforeend','<input type=&quot;hidden&quot; name=&quot;service_id&quot; value=&quot;{{ s.id }}&quot;>')">{{ 'Hide' if s.active else 'Enable' }}</button></td></tr>{% endfor %}
+</tbody></table></div><button class="btn primary">Save rates</button></form></section>
+{% endblock %}

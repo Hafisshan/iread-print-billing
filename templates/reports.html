@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Daily Reports | Iread{% endblock %}
+{% block content %}
+<div class="pagehead"><div><p class="eyebrow">SHOP PERFORMANCE</p><h1>Daily report</h1><p class="muted">Sales, payment collection and estimated paper usage.</p></div></div>
+<form class="searchbar" method="get"><label>Report date <input type="date" name="date" value="{{ selected_date }}"></label><button class="btn primary">View report</button></form>
+<div class="reportcards">
+<div class="metric"><span>Bills</span><strong>{{ summary.bills }}</strong></div>
+<div class="metric"><span>Sales after discount</span><strong>{{ summary.total|inr }}</strong></div>
+<div class="metric"><span>Amount received</span><strong>{{ summary.paid|inr }}</strong></div>
+<div class="metric"><span>Balance due</span><strong>{{ summary.balance|inr }}</strong></div>
+</div>
+<div class="reportgrid">
+<section class="panel"><h2>Estimated print usage</h2><div class="usage"><div><span>Physical paper sheets</span><strong>{{ usage.sheets }}</strong></div><div><span>B&W page units</span><strong>{{ usage.bw_units }}</strong></div><div><span>Color/photo page units</span><strong>{{ usage.color_units }}</strong></div></div><p class="hint">Usage is estimated from bill entries, not measured from the printer. Duplex jobs count fewer sheets. Confirm this estimate against actual printer settings.</p></section>
+<section class="panel"><h2>Payment methods</h2><table><thead><tr><th>Method</th><th>Bills</th><th>Total</th><th>Received</th></tr></thead><tbody>{% for p in payment_rows %}<tr><td>{{ p.payment_method }}</td><td>{{ p.count }}</td><td>{{ p.amount|inr }}</td><td>{{ p.paid|inr }}</td></tr>{% else %}<tr><td colspan="4" class="muted">No sales for this date.</td></tr>{% endfor %}</tbody></table></section>
+</div>
+<section class="panel"><h2>Service breakdown</h2><table><thead><tr><th>Service</th><th>Units (copies × pages)</th><th>Sales</th></tr></thead><tbody>{% for item in top_items %}<tr><td>{{ item.service_name }}</td><td>{{ item.units }}</td><td>{{ item.amount|inr }}</td></tr>{% else %}<tr><td colspan="3" class="muted">No sales for this date.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}
