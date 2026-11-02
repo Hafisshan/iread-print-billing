@@ -11,7 +11,11 @@ load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 APP_DIR = Path(__file__).resolve().parent
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder=str(APP_DIR / "static"),
+    template_folder=str(APP_DIR / "templates"),
+)
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-local-secret-key")
 
 # For Vercel WSGI
