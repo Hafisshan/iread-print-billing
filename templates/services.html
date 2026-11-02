@@ -1,16 +1,112 @@
 {% extends "base.html" %}
-{% block title %}Price List | Iread{% endblock %}
+{% block title %}Price List & Items | Iread{% endblock %}
 {% block content %}
-<div class="pagehead"><div><p class="eyebrow">SETUP</p><h1>Price list</h1><p class="muted">Edit your rates before using this for live billing.</p></div></div>
-<section class="panel"><h2>Add a service</h2><form method="post" class="formgrid"><input type="hidden" name="action" value="add">
-<label>Service name<input name="name" required placeholder="e.g. B&W A4 single side"></label>
-<label>Rate per page / unit (₹)<input type="number" min="0" step="0.01" name="rate" required></label>
-<label>Type<select name="print_type"><option value="bw">Black & white</option><option value="color">Color</option><option value="photo">Photo</option></select></label>
-<label>Paper size<input name="paper_size" value="A4" required></label>
-<label>Sheets per unit<input name="sheets_per_unit" type="number" min="1" value="1"></label>
-<div class="align-end"><button class="btn primary">Add service</button></div>
-</form></section>
-<section class="panel"><h2>Current services</h2><form method="post"><input type="hidden" name="action" value="update"><div class="tablewrap"><table><thead><tr><th>Service</th><th>Type</th><th>Size</th><th>Rate (₹)</th><th>Status</th><th></th></tr></thead><tbody>
-{% for s in services %}<tr><td>{{ s.name }}</td><td>{{ s.print_type }}</td><td>{{ s.paper_size }}</td><td><input class="rate-edit" name="service_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.rate) }}" {% if not s.active %}disabled{% endif %}><input type="hidden" name="service_id[]" value="{{ s.id }}"></td><td>{{ 'Active' if s.active else 'Hidden' }}</td><td><button class="btn tiny secondary" type="submit" formaction="{{ url_for('services') }}" formmethod="post" name="action" value="toggle" onclick="this.form.insertAdjacentHTML('beforeend','<input type=&quot;hidden&quot; name=&quot;service_id&quot; value=&quot;{{ s.id }}&quot;>')">{{ 'Hide' if s.active else 'Enable' }}</button></td></tr>{% endfor %}
-</tbody></table></div><button class="btn primary">Save rates</button></form></section>
+<div class="pagehead">
+  <div>
+    <p class="eyebrow">SETUP</p>
+    <h1>Price list &amp; Items</h1>
+    <p class="muted">Add new items, edit names and prices, or remove items from the billing catalog.</p>
+  </div>
+</div>
+
+<section class="panel">
+  <h2>Add New Item / Service</h2>
+  <form method="post" class="formgrid">
+    <input type="hidden" name="action" value="add">
+    <label>
+      Item / Service name
+      <input name="name" required placeholder="e.g. Spiral Binding A4">
+    </label>
+    <label>
+      Rate per unit / page (₹)
+      <input type="number" min="0" step="0.01" name="rate" required placeholder="0.00">
+    </label>
+    <label>
+      Category
+      <select name="print_type">
+        <option value="bw">Black &amp; white</option>
+        <option value="color">Colour</option>
+        <option value="photo">Photo</option>
+        <option value="service">Service / Other</option>
+      </select>
+    </label>
+    <label>
+      Paper / Item size
+      <input name="paper_size" value="A4" required placeholder="e.g. A4, Legal, -">
+    </label>
+    <label>
+      Sheets per unit
+      <input name="sheets_per_unit" type="number" min="0" value="1">
+    </label>
+    <div class="align-end">
+      <button class="btn primary" type="submit">+ Add item</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <form method="post">
+    <input type="hidden" name="action" value="update">
+    <div class="section-title">
+      <h2>Current Items ({{ services|length }})</h2>
+      <button class="btn primary" type="submit">Save all changes</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Item Name</th>
+            <th>Category</th>
+            <th>Size</th>
+            <th>Rate (₹)</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in services %}
+          <tr>
+            <td>
+              <input class="name-edit" name="service_name[]" value="{{ s.name }}" required>
+              <input type="hidden" name="service_id[]" value="{{ s.id }}">
+            </td>
+            <td>
+              <select class="type-edit" name="service_type[]">
+                <option value="bw" {% if s.print_type == 'bw' %}selected{% endif %}>B&amp;W</option>
+                <option value="color" {% if s.print_type == 'color' %}selected{% endif %}>Colour</option>
+                <option value="photo" {% if s.print_type == 'photo' %}selected{% endif %}>Photo</option>
+                <option value="service" {% if s.print_type == 'service' %}selected{% endif %}>Service</option>
+              </select>
+            </td>
+            <td>
+              <input class="size-edit" name="service_size[]" value="{{ s.paper_size }}" required>
+            </td>
+            <td>
+              <input class="rate-edit" name="service_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.rate) }}" required>
+            </td>
+            <td>
+              <span class="status-badge {% if s.active %}status-active{% else %}status-disabled{% endif %}">
+                {{ 'Enabled' if s.active else 'Disabled' }}
+              </span>
+            </td>
+            <td>
+              <div class="table-actions">
+                <button class="btn tiny {% if s.active %}btn-warn{% else %}btn-success{% endif %}" type="submit" formaction="{{ url_for('services') }}" formmethod="post" name="action" value="toggle" onclick="this.form.insertAdjacentHTML('beforeend','<input type=&quot;hidden&quot; name=&quot;service_id&quot; value=&quot;{{ s.id }}&quot;>')">
+                  {{ 'Disable (Hide)' if s.active else 'Enable (Show)' }}
+                </button>
+                <button class="btn tiny danger" type="submit" formaction="{{ url_for('services') }}" formmethod="post" name="action" value="delete" onclick="if(!confirm('Are you sure you want to permanently delete \'{{ s.name|e }}\'?')) return false; this.form.insertAdjacentHTML('beforeend','<input type=&quot;hidden&quot; name=&quot;service_id&quot; value=&quot;{{ s.id }}&quot;>')">
+                  Delete
+                </button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top: 18px; display: flex; justify-content: flex-end;">
+      <button class="btn primary" type="submit">Save all changes</button>
+    </div>
+  </form>
+</section>
 {% endblock %}

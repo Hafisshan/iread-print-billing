@@ -190,6 +190,14 @@ tr:last-child td{border-bottom:0}
 .usage>div{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line)}
 .usage>div:last-child{border-bottom:0}.usage span{color:var(--muted)}
 .rate-edit{min-width:100px;max-width:120px}.align-end{display:flex;align-items:flex-end}
+.name-edit{min-width:180px;font-weight:600}.size-edit{min-width:70px;max-width:90px}.type-edit{min-width:100px}
+.table-actions{display:flex;gap:6px;align-items:center}
+.btn-warn{background:#fff3cd;color:#856404;border:1px solid #ffeeba}.btn-warn:hover{background:#ffe8a1}
+.btn-success{background:#d4edda;color:#155724;border:1px solid #c3e6cb}.btn-success:hover{background:#c3e6cb}
+.btn.danger{background:#f8d7da;color:#721c24;border:1px solid #f5c6cb}.btn.danger:hover{background:#f1b0b7}
+.status-badge{font-size:10px;font-weight:800;letter-spacing:.6px;padding:4px 8px;border-radius:12px;text-transform:uppercase;display:inline-block}
+.status-active{background:#d4edda;color:#155724}
+.status-disabled{background:#f8d7da;color:#721c24}
 .footer{text-align:center;padding:24px;color:#98919c;font-size:11px}
 .receipt-actions{display:flex;justify-content:center;gap:10px;margin-bottom:18px}
 .receipt{background:#fff;border:1px solid var(--line);border-radius:12px;padding:28px;max-width:440px;margin:0 auto;box-shadow:0 4px 20px #2010280b}
