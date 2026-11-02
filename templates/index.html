@@ -1,73 +1,354 @@
 {% extends "base.html" %}
 {% block title %}New Bill | Iread{% endblock %}
 {% block content %}
-<div class="pagehead"><div><p class="eyebrow">POINT OF SALE</p><h1>Create a bill</h1><p class="muted">Choose a service, enter copies and pages, then print the receipt.</p></div>
-<div class="stats"><div><span>Today's bills</span><strong>{{ today_count }}</strong></div><div><span>Today's sales</span><strong>{{ today_total|inr }}</strong></div></div></div>
-<form method="post" action="{{ url_for('create_bill') }}" id="billForm">
-<section class="panel">
-<div class="section-title"><h2>Customer & payment</h2></div>
-<div class="formgrid">
-<label>Customer name (optional)<input name="customer" placeholder="Walk-in customer"></label>
-<label>Payment method<select name="payment_method"><option>Cash</option><option>UPI</option><option>Card</option><option>Credit</option><option>Other</option></select></label>
-<label>Discount (₹)<input type="number" min="0" step="0.01" name="discount" id="discount" value="0"></label>
-<label>Amount received (₹)<input type="number" min="0" step="0.01" name="paid" id="paid" placeholder="Leave blank for full payment"></label>
+
+<!-- ── TOP BAR STATS ── -->
+<div class="pos-topbar">
+  <div class="pos-brand-mini">
+    <span class="pos-dot"></span>
+    <span>New Bill</span>
+  </div>
+  <div class="pos-stats">
+    <div><span>Today</span><strong>{{ today_count }} bills</strong></div>
+    <div><span>Sales</span><strong>{{ today_total|inr }}</strong></div>
+  </div>
 </div>
-</section>
-<section class="panel">
-<div class="section-title"><h2>Print jobs</h2><button type="button" class="btn secondary" id="addRow">+ Add job</button></div>
-<div class="tablewrap"><table class="jobs"><thead><tr><th>Service</th><th>Copies</th><th>Pages / copy</th><th>Sides</th><th>Rate / page (₹)</th><th>Amount</th><th></th></tr></thead>
-<tbody id="jobRows"></tbody></table></div>
-<div class="hint">Amount = quantity × pages per copy × rate. For first-page/extra-page services, use quantity to enter how many first/extra pages are charged and keep pages per copy at 1.</div>
-</section>
-<section class="panel">
-<label>Notes (optional)<textarea name="notes" rows="2" placeholder="Job details or customer instructions"></textarea></label>
-<div class="checkout"><div class="totals"><div><span>Subtotal</span><strong id="subtotal">₹0.00</strong></div><div><span>Discount</span><strong id="discountView">₹0.00</strong></div><div class="grand"><span>Total</span><strong id="total">₹0.00</strong></div></div>
-<button class="btn primary big" type="submit">Save bill & open receipt</button></div>
-</section>
+
+<!-- ── SERVICE TILE GRID ── -->
+<div class="pos-layout">
+  <div class="pos-services" id="servicePanel">
+
+    <!-- Category filter tabs -->
+    <div class="cat-tabs" id="catTabs">
+      <button class="cat-tab active" data-cat="all">All</button>
+      <button class="cat-tab" data-cat="bw">B&amp;W</button>
+      <button class="cat-tab" data-cat="color">Colour</button>
+      <button class="cat-tab" data-cat="photo">Photo</button>
+      <button class="cat-tab" data-cat="service">Services</button>
+    </div>
+
+    <!-- Tiles -->
+    <div class="tile-grid" id="tileGrid">
+      {% for s in services %}
+      <button type="button"
+        class="tile"
+        data-id="{{ s.id }}"
+        data-name="{{ s.name }}"
+        data-rate="{{ s.rate }}"
+        data-type="{{ s.print_type }}"
+        data-size="{{ s.paper_size }}"
+        data-cat="{{ s.print_type }}">
+        <span class="tile-badge {{ s.print_type }}">{{ s.print_type | upper }}</span>
+        <span class="tile-name">{{ s.name }}</span>
+        <span class="tile-rate">{{ s.rate | inr }}</span>
+      </button>
+      {% endfor %}
+    </div>
+
+  </div>
+
+  <!-- ── CART PANEL ── -->
+  <div class="pos-cart" id="cartPanel">
+    <div class="cart-header">
+      <span class="cart-title">🛒 Bill</span>
+      <div class="cart-meta-row">
+        <select name="payment_method" id="pmMethod" class="cart-select">
+          <option>Cash</option><option>UPI</option><option>Card</option>
+          <option>Credit</option><option>Other</option>
+        </select>
+        <input class="cart-input-sm" type="text" id="pmCustomer" placeholder="Customer (optional)">
+      </div>
+    </div>
+
+    <div class="cart-items" id="cartItems">
+      <div class="cart-empty" id="cartEmpty">Tap a service to add it →</div>
+    </div>
+
+    <div class="cart-footer">
+      <div class="cart-totals">
+        <div><span>Subtotal</span><strong id="cSubtotal">₹0.00</strong></div>
+        <div>
+          <label for="cDiscount">Discount ₹</label>
+          <input id="cDiscount" class="cart-input-num" type="number" min="0" step="0.01" value="0">
+        </div>
+        <div class="cart-grand"><span>Total</span><strong id="cTotal">₹0.00</strong></div>
+        <div>
+          <label for="cPaid">Received ₹</label>
+          <input id="cPaid" class="cart-input-num" type="number" min="0" step="0.01" placeholder="Full">
+        </div>
+      </div>
+      <button class="pos-submit-btn" id="submitBillBtn" disabled>Save &amp; Print Receipt</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── HIDDEN FORM (submitted programmatically) ── -->
+<form method="post" action="{{ url_for('create_bill') }}" id="billForm" style="display:none">
+  <input name="customer" id="fCustomer">
+  <input name="payment_method" id="fPayment">
+  <input name="discount" id="fDiscount">
+  <input name="paid" id="fPaid">
+  <input name="notes" id="fNotes" value="">
+  <div id="fItems"></div>
 </form>
-<template id="rowTemplate">
-<tr class="jobrow">
-<td><select name="item_service[]" class="serviceSelect" required><option value="">Select service…</option>{% for s in services %}<option value="{{ s.id }}" data-rate="{{ s.rate }}" data-type="{{ s.print_type }}" data-size="{{ s.paper_size }}">{{ s.name }} — {{ s.rate|inr }}</option>{% endfor %}</select></td>
-<td><input name="item_qty[]" class="qty" type="number" min="1" value="1" required></td>
-<td><input name="item_pages[]" class="pages" type="number" min="1" value="1" required></td>
-<td><select name="item_sides[]"><option>Single</option><option>Double-sided</option></select></td>
-<td><input name="item_rate[]" class="rate" type="number" min="0" step="0.01" value="0" required></td>
-<td class="lineAmount">₹0.00</td><td><button type="button" class="remove" aria-label="Remove row">×</button></td>
-</tr>
-</template>
+
+<!-- ── ITEM EDITOR MODAL ── -->
+<div class="modal-backdrop" id="modalBackdrop"></div>
+<div class="item-modal" id="itemModal" role="dialog" aria-modal="true">
+  <div class="modal-drag-bar"></div>
+  <div class="modal-header">
+    <div>
+      <span class="modal-badge" id="mBadge"></span>
+      <strong class="modal-title" id="mName"></strong>
+    </div>
+    <button class="modal-close" id="modalClose" aria-label="Close">×</button>
+  </div>
+
+  <div class="modal-fields">
+    <div class="mf-row">
+      <div class="mf-group">
+        <label>Copies</label>
+        <div class="stepper">
+          <button type="button" class="step-btn" data-target="mQty" data-delta="-1">−</button>
+          <input id="mQty" class="step-input" type="number" min="1" value="1">
+          <button type="button" class="step-btn" data-target="mQty" data-delta="1">+</button>
+        </div>
+      </div>
+      <div class="mf-group">
+        <label>Pages / copy</label>
+        <div class="stepper">
+          <button type="button" class="step-btn" data-target="mPages" data-delta="-1">−</button>
+          <input id="mPages" class="step-input" type="number" min="1" value="1">
+          <button type="button" class="step-btn" data-target="mPages" data-delta="1">+</button>
+        </div>
+      </div>
+    </div>
+    <div class="mf-row">
+      <div class="mf-group">
+        <label>Sides</label>
+        <div class="seg-ctrl" id="sidesCtrl">
+          <button type="button" class="seg-btn active" data-val="Single">Single</button>
+          <button type="button" class="seg-btn" data-val="Double-sided">Double</button>
+        </div>
+      </div>
+      <div class="mf-group">
+        <label>Rate / page (₹)</label>
+        <input id="mRate" class="modal-rate-input" type="number" min="0" step="0.01">
+      </div>
+    </div>
+    <div class="modal-line-total">
+      Amount: <strong id="mAmount">₹0.00</strong>
+    </div>
+  </div>
+
+  <div class="modal-actions">
+    <button type="button" class="pos-btn secondary" id="modalCancel">Cancel</button>
+    <button type="button" class="pos-btn primary" id="modalAdd">Add to Bill</button>
+  </div>
+</div>
+
 <script>
-const rows = document.getElementById('jobRows');
-const template = document.getElementById('rowTemplate');
-function addRow() {
-  rows.appendChild(template.content.cloneNode(true));
-  const row = rows.lastElementChild;
-  row.querySelector('.serviceSelect').addEventListener('change', e => {
-    const opt = e.target.selectedOptions[0];
-    row.querySelector('.rate').value = opt.dataset.rate || 0;
-    calculate();
+/* ─────────── State ─────────── */
+let cart = [];          // [{id,name,rate,type,size,qty,pages,sides,lineTotal}]
+let editingIdx = null;  // index of cart item being edited (null = new)
+let activeTile = null;
+
+/* ─────────── Category filter ─────────── */
+document.getElementById('catTabs').addEventListener('click', e => {
+  const btn = e.target.closest('.cat-tab');
+  if (!btn) return;
+  document.querySelectorAll('.cat-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const cat = btn.dataset.cat;
+  document.querySelectorAll('.tile').forEach(t => {
+    t.style.display = (cat === 'all' || t.dataset.cat === cat) ? '' : 'none';
   });
-  row.querySelectorAll('input,select').forEach(el => el.addEventListener('input', calculate));
-  row.querySelector('.remove').addEventListener('click', () => { row.remove(); calculate(); });
-  calculate();
-}
-function fmt(n) { return '₹' + Number(n || 0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function calculate() {
-  let subtotal = 0;
-  document.querySelectorAll('.jobrow').forEach(row => {
-    const qty = Math.max(0, Number(row.querySelector('.qty').value || 0));
-    const pages = Math.max(1, Number(row.querySelector('.pages').value || 1));
-    const rate = Math.max(0, Number(row.querySelector('.rate').value || 0));
-    const amount = qty * pages * rate;
-    row.querySelector('.lineAmount').textContent = fmt(amount);
-    subtotal += amount;
+});
+
+/* ─────────── Tile tap → open modal ─────────── */
+document.getElementById('tileGrid').addEventListener('click', e => {
+  const tile = e.target.closest('.tile');
+  if (!tile) return;
+  activeTile = tile;
+  editingIdx = null;
+  openModal({
+    id: tile.dataset.id,
+    name: tile.dataset.name,
+    rate: parseFloat(tile.dataset.rate),
+    type: tile.dataset.type,
+    size: tile.dataset.size,
+    qty: 1, pages: 1, sides: 'Single'
   });
-  const discount = Math.min(subtotal, Math.max(0, Number(document.getElementById('discount').value || 0)));
-  document.getElementById('subtotal').textContent = fmt(subtotal);
-  document.getElementById('discountView').textContent = fmt(discount);
-  document.getElementById('total').textContent = fmt(subtotal-discount);
+});
+
+/* ─────────── Modal open/close ─────────── */
+function openModal(item) {
+  document.getElementById('mBadge').textContent = item.type.toUpperCase();
+  document.getElementById('mBadge').className = 'modal-badge ' + item.type;
+  document.getElementById('mName').textContent = item.name;
+  document.getElementById('mQty').value = item.qty || 1;
+  document.getElementById('mPages').value = item.pages || 1;
+  document.getElementById('mRate').value = item.rate;
+  setSides(item.sides || 'Single');
+  updateModalAmount();
+  document.getElementById('itemModal').classList.add('open');
+  document.getElementById('modalBackdrop').classList.add('open');
+  document.getElementById('modalAdd').textContent = editingIdx !== null ? 'Update' : 'Add to Bill';
 }
-document.getElementById('addRow').addEventListener('click', addRow);
-document.getElementById('discount').addEventListener('input', calculate);
-addRow();
+
+function closeModal() {
+  document.getElementById('itemModal').classList.remove('open');
+  document.getElementById('modalBackdrop').classList.remove('open');
+  editingIdx = null;
+}
+
+document.getElementById('modalClose').addEventListener('click', closeModal);
+document.getElementById('modalCancel').addEventListener('click', closeModal);
+document.getElementById('modalBackdrop').addEventListener('click', closeModal);
+
+/* ─────────── Sides segmented control ─────────── */
+function setSides(val) {
+  document.querySelectorAll('.seg-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.val === val);
+  });
+}
+document.getElementById('sidesCtrl').addEventListener('click', e => {
+  const btn = e.target.closest('.seg-btn');
+  if (!btn) return;
+  setSides(btn.dataset.val);
+  updateModalAmount();
+});
+
+/* ─────────── Stepper buttons ─────────── */
+document.querySelectorAll('.step-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const inp = document.getElementById(btn.dataset.target);
+    inp.value = Math.max(1, (parseInt(inp.value) || 1) + parseInt(btn.dataset.delta));
+    updateModalAmount();
+  });
+});
+
+['mQty','mPages','mRate'].forEach(id => {
+  document.getElementById(id).addEventListener('input', updateModalAmount);
+});
+
+function updateModalAmount() {
+  const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
+  const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
+  const rate = parseFloat(document.getElementById('mRate').value) || 0;
+  const total = qty * pages * rate;
+  document.getElementById('mAmount').textContent = fmt(total);
+}
+
+/* ─────────── Add / Update cart ─────────── */
+document.getElementById('modalAdd').addEventListener('click', () => {
+  const qty   = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
+  const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
+  const rate  = parseFloat(document.getElementById('mRate').value) || 0;
+  const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
+  const lineTotal = qty * pages * rate;
+
+  if (editingIdx !== null) {
+    cart[editingIdx] = { ...cart[editingIdx], qty, pages, rate, sides, lineTotal };
+  } else {
+    const tile = activeTile;
+    cart.push({
+      id: tile.dataset.id,
+      name: tile.dataset.name,
+      type: tile.dataset.type,
+      size: tile.dataset.size,
+      qty, pages, rate, sides, lineTotal
+    });
+  }
+  closeModal();
+  renderCart();
+});
+
+/* ─────────── Cart render ─────────── */
+function renderCart() {
+  const el = document.getElementById('cartItems');
+  const empty = document.getElementById('cartEmpty');
+  if (cart.length === 0) {
+    el.innerHTML = '';
+    el.appendChild(empty);
+    document.getElementById('submitBillBtn').disabled = true;
+    recalc();
+    return;
+  }
+  empty.remove();
+  el.innerHTML = '';
+  cart.forEach((item, idx) => {
+    const div = document.createElement('div');
+    div.className = 'cart-item';
+    div.innerHTML = `
+      <div class="ci-info" data-idx="${idx}">
+        <span class="ci-badge ${item.type}">${item.type.toUpperCase()}</span>
+        <div class="ci-detail">
+          <span class="ci-name">${item.name}</span>
+          <span class="ci-meta">${item.qty} × ${item.pages}p × ₹${item.rate} · ${item.sides}</span>
+        </div>
+      </div>
+      <div class="ci-right">
+        <span class="ci-total">${fmt(item.lineTotal)}</span>
+        <button class="ci-del" data-idx="${idx}" aria-label="Remove">✕</button>
+      </div>`;
+    el.appendChild(div);
+  });
+  document.getElementById('submitBillBtn').disabled = false;
+  recalc();
+
+  // Edit on tap
+  el.querySelectorAll('.ci-info').forEach(row => {
+    row.addEventListener('click', () => {
+      editingIdx = parseInt(row.dataset.idx);
+      const item = cart[editingIdx];
+      // find matching tile
+      activeTile = document.querySelector(`.tile[data-id="${item.id}"]`);
+      openModal(item);
+    });
+  });
+  // Delete
+  el.querySelectorAll('.ci-del').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      cart.splice(parseInt(btn.dataset.idx), 1);
+      renderCart();
+    });
+  });
+}
+
+/* ─────────── Recalc totals ─────────── */
+function recalc() {
+  const subtotal = cart.reduce((s, i) => s + i.lineTotal, 0);
+  const disc = Math.min(subtotal, Math.max(0, parseFloat(document.getElementById('cDiscount').value) || 0));
+  document.getElementById('cSubtotal').textContent = fmt(subtotal);
+  document.getElementById('cTotal').textContent = fmt(subtotal - disc);
+}
+document.getElementById('cDiscount').addEventListener('input', recalc);
+
+/* ─────────── Submit ─────────── */
+document.getElementById('submitBillBtn').addEventListener('click', () => {
+  const fItems = document.getElementById('fItems');
+  fItems.innerHTML = '';
+  cart.forEach(item => {
+    const h = (n,v) => { const i=document.createElement('input'); i.type='hidden'; i.name=n; i.value=v; fItems.appendChild(i); };
+    h('item_service[]', item.id);
+    h('item_qty[]',     item.qty);
+    h('item_pages[]',   item.pages);
+    h('item_sides[]',   item.sides);
+    h('item_rate[]',    item.rate);
+  });
+  document.getElementById('fCustomer').value = document.getElementById('pmCustomer').value;
+  document.getElementById('fPayment').value  = document.getElementById('pmMethod').value;
+  document.getElementById('fDiscount').value = document.getElementById('cDiscount').value || 0;
+  const paid = document.getElementById('cPaid').value;
+  document.getElementById('fPaid').value = paid || '';
+  document.getElementById('billForm').submit();
+});
+
+/* ─────────── Helpers ─────────── */
+function fmt(n) {
+  return '₹' + Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
 </script>
 {% endblock %}
