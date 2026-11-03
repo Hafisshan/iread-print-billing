@@ -1,14 +1,17 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, make_response
+from flask import Flask, render_template, request, redirect, url_for, flash, make_response, session
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
 from datetime import datetime, date
 import os
+from functools import wraps
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "iread@123")
 
 APP_DIR = Path(__file__).resolve().parent
 app = Flask(
@@ -16,9 +19,7 @@ app = Flask(
     static_folder=str(APP_DIR / "static"),
     template_folder=str(APP_DIR / "templates"),
 )
-app.secret_key = os.environ.get("SECRET_KEY", "change-this-local-secret-key")
-
-# For Vercel WSGI
+app.secret_key = os.environ.get("SECRET_KEY", "iread-print-billing-secret-key-2026")
 app.debug = False
 
 DEFAULT_SERVICES = [
@@ -70,8 +71,7 @@ DEFAULT_SERVICES = [
 ]
 
 def db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-    return conn
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
 
 def init_db():
     if not DATABASE_URL:
@@ -136,10 +136,46 @@ def money(v):
 def inr(value):
     return f"₹{float(value or 0):,.2f}"
 
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get("is_admin"):
+            flash("Admin login required to access this page.", "error")
+            return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ── Auth Routes ──
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session["is_admin"] = True
+            flash("Welcome back, Admin!", "success")
+            next_url = request.args.get("next") or url_for("services")
+            return redirect(next_url)
+        else:
+            flash("Invalid username or password.", "error")
+    return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    session.pop("is_admin", None)
+    flash("Logged out successfully.", "success")
+    return redirect(url_for("index"))
+
+# ── Desktop / Install App Route ──
+@app.route("/install")
+def install_page():
+    return render_template("install.html")
+
+# ── Billing Route (Public / Fast POS) ──
 @app.route("/")
 def index():
     if not DATABASE_URL:
-        return "DATABASE_URL environment variable is missing on Vercel. Please set it in Vercel Project Settings -> Environment Variables.", 500
+        return "DATABASE_URL environment variable is missing. Please set it in Vercel Project Settings -> Environment Variables.", 500
     try:
         with db() as conn:
             with conn.cursor() as cur:
@@ -158,28 +194,19 @@ def index():
 
 @app.post("/create-bill")
 def create_bill():
-    names        = request.form.getlist("item_service[]")
-    custom_names = request.form.getlist("item_name[]")
-    quantities   = request.form.getlist("item_qty[]")
-    rates        = request.form.getlist("item_rate[]")
-    pages        = request.form.getlist("item_pages[]")
-    sides_list   = request.form.getlist("item_sides[]")
-    types_list   = request.form.getlist("item_type[]")
-    sizes_list   = request.form.getlist("item_size[]")
-    customer     = request.form.get("customer", "").strip()
-    payment      = request.form.get("payment_method", "Cash")
-    discount     = money(request.form.get("discount", 0))
-    paid_input   = request.form.get("paid", "")
-    notes        = request.form.get("notes", "").strip()
+    names      = request.form.getlist("item_service[]")
+    quantities = request.form.getlist("item_qty[]")
+    rates      = request.form.getlist("item_rate[]")
+    pages      = request.form.getlist("item_pages[]")
+    sides_list = request.form.getlist("item_sides[]")
+    customer   = request.form.get("customer", "").strip()
+    payment    = request.form.get("payment_method", "Cash")
+    discount   = money(request.form.get("discount", 0))
+    paid_input = request.form.get("paid", "")
+    notes      = request.form.get("notes", "").strip()
 
     items = []
     subtotal = 0.0
-
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM services")
-            service_map = {s["id"]: s for s in cur.fetchall()}
-
     for i, service_id in enumerate(names):
         if not service_id:
             continue
@@ -187,47 +214,29 @@ def create_bill():
             qty            = int(quantities[i])
             pages_per_copy = max(1, int(pages[i] or 1))
             rate           = money(rates[i])
+            service_id_int = int(service_id)
         except (ValueError, IndexError):
             continue
         if qty <= 0:
             continue
-
-        sides = sides_list[i] if i < len(sides_list) else "Single"
-        custom_name = custom_names[i].strip() if i < len(custom_names) and custom_names[i].strip() else ""
-        custom_type = types_list[i].strip() if i < len(types_list) and types_list[i].strip() else "bw"
-        custom_size = sizes_list[i].strip() if i < len(sizes_list) and sizes_list[i].strip() else "A4"
-
-        try:
-            service_id_int = int(service_id)
-            service = service_map.get(service_id_int)
-        except ValueError:
-            service = None
-
-        if service:
-            s_name = custom_name if custom_name else service["name"]
-            s_type = service["print_type"]
-            s_size = service["paper_size"]
-            sheets_per_unit = service["sheets_per_unit"]
-        elif custom_name:
-            s_name = custom_name
-            s_type = custom_type
-            s_size = custom_size
-            sheets_per_unit = 1 if s_type in ("bw", "color", "photo") else 0
-        else:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM services WHERE id=%s AND active=1", (service_id_int,))
+                service = cur.fetchone()
+        if not service:
             continue
-
+        sides      = sides_list[i] if i < len(sides_list) else "Single"
         line_total = money(qty * pages_per_copy * rate)
-        color_units = qty * pages_per_copy if s_type in ("color", "photo") else 0
-        if sheets_per_unit == 0:
+        color_units = qty * pages_per_copy if service["print_type"] in ("color", "photo") else 0
+        if service["sheets_per_unit"] == 0:
             sheets = 0
         elif sides.lower().startswith("double"):
             sheets = qty * ((pages_per_copy + 1) // 2)
         else:
             sheets = qty * pages_per_copy
-
         items.append({
-            "service_name": s_name, "print_type": s_type,
-            "paper_size": s_size, "quantity": qty,
+            "service_name": service["name"], "print_type": service["print_type"],
+            "paper_size": service["paper_size"], "quantity": qty,
             "pages_per_copy": pages_per_copy, "sides": sides, "rate": rate,
             "line_total": line_total, "paper_sheets": sheets, "color_units": color_units
         })
@@ -247,7 +256,6 @@ def create_bill():
 
     with db() as conn:
         with conn.cursor() as cur:
-            # Avoid bill_no collision
             original = bill_no
             suffix   = 1
             cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
@@ -284,7 +292,9 @@ def receipt(bill_id):
         return "Bill not found", 404
     return render_template("receipt.html", bill=bill, items=items)
 
+# ── Admin Protected Routes ──
 @app.route("/history")
+@admin_required
 def history():
     q = request.args.get("q", "").strip()
     with db() as conn:
@@ -300,6 +310,7 @@ def history():
     return render_template("history.html", bills=bills, q=q)
 
 @app.route("/reports")
+@admin_required
 def reports():
     selected_date = request.args.get("date", date.today().isoformat())
     with db() as conn:
@@ -324,7 +335,7 @@ def reports():
             cur.execute("""
                 SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount,
                        COALESCE(SUM(paid),0) AS paid
-                FROM bills WHERE substr(b.created_at,1,10)=%s GROUP BY payment_method
+                FROM bills WHERE substr(created_at,1,10)=%s GROUP BY payment_method
             """, (selected_date,))
             payment_rows = cur.fetchall()
 
@@ -340,6 +351,7 @@ def reports():
                            usage=usage, payment_rows=payment_rows, top_items=top_items)
 
 @app.route("/services", methods=["GET", "POST"])
+@admin_required
 def services():
     with db() as conn:
         with conn.cursor() as cur:
@@ -413,6 +425,7 @@ def services():
     return render_template("services.html", services=rows)
 
 @app.route("/export.csv")
+@admin_required
 def export_csv():
     import csv, io
     output = io.StringIO()
@@ -429,6 +442,7 @@ def export_csv():
     return response
 
 @app.route("/backup")
+@admin_required
 def backup():
     return "<h2>PostgreSQL Database</h2><p>Data is stored on Aiven cloud PostgreSQL. Use the <a href='/export.csv'>Export CSV</a> option to download a backup.</p><p><a href='/'>Back to billing</a></p>"
 

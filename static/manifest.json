@@ -1,0 +1,17 @@
+{
+  "name": "Iread Print Billing",
+  "short_name": "Iread Billing",
+  "description": "Iread Photostat & Color Printing Touch POS & Billing System",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f2f6",
+  "theme_color": "#780431",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

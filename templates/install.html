@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Install App | Iread{% endblock %}
+{% block content %}
+<div class="install-wrapper">
+  <div class="panel" style="max-width: 600px; margin: 20px auto; text-align: center; padding: 36px 24px;">
+    <img src="{{ url_for('static', filename='icon.svg') }}" alt="Iread Logo" style="width: 88px; height: 88px; margin-bottom: 16px;">
+    <h1 style="font-size: 24px; margin-bottom: 8px;">Install Iread Billing App</h1>
+    <p class="muted" style="margin-bottom: 24px;">
+      Add Iread Print Billing directly to your desktop or home screen for 1-click fast touch access without browser tabs.
+    </p>
+
+    <div id="pwaInstallBox" style="margin-bottom: 28px;">
+      <button id="pwaInstallBtn" class="pos-submit-btn" style="max-width: 280px; margin: 0 auto; display: none;">
+        📥 Install Desktop App
+      </button>
+      <div id="pwaInstalledMsg" style="display: none; color: #16784b; font-weight: 600;">
+        ✓ App is already installed or running as standalone!
+      </div>
+    </div>
+
+    <div style="text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 13px;">
+      <h3 style="margin: 0 0 10px; font-size: 14px;">How to install manually:</h3>
+      <ul style="padding-left: 20px; margin: 0; line-height: 1.8; color: var(--ink);">
+        <li><strong>Google Chrome / Edge (Desktop):</strong> Click the install icon <span style="font-family: monospace;">(⊕ / 📥)</span> in the address bar at the top-right, then click <em>Install</em>.</li>
+        <li><strong>Safari on Mac:</strong> Click <em>File</em> → <em>Add to Dock...</em></li>
+        <li><strong>Android (Chrome):</strong> Tap menu (3 dots) → <em>Add to Home Screen / Install app</em>.</li>
+        <li><strong>iPhone / iPad (Safari):</strong> Tap Share button → <em>Add to Home Screen</em>.</li>
+      </ul>
+    </div>
+
+    <div style="margin-top: 24px;">
+      <a href="{{ url_for('index') }}" class="btn primary">Open Billing Screen</a>
+    </div>
+  </div>
+</div>
+
+<script>
+let deferredPrompt;
+const installBtn = document.getElementById('pwaInstallBtn');
+const installedMsg = document.getElementById('pwaInstalledMsg');
+
+if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+  installedMsg.style.display = 'block';
+} else {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installBtn.style.display = 'block';
+  });
+
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    if (outcome === 'accepted') {
+      installBtn.style.display = 'none';
+      installedMsg.style.display = 'block';
+    }
+  });
+}
+</script>
+{% endblock %}

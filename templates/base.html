@@ -5,15 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Iread Print Billing{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+<meta name="theme-color" content="#780431">
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><div class="brandmark">I</div><div><strong>Iread</strong><span>Photostat & Color Printing</span></div></div>
+  <div class="brand">
+    <a href="{{ url_for('index') }}" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 10px;">
+      <div class="brandmark">I</div>
+      <div><strong>Iread</strong><span>Photostat & Color Printing</span></div>
+    </a>
+  </div>
   <nav>
-    <a href="{{ url_for('index') }}">New Bill</a>
-    <a href="{{ url_for('history') }}">Bill History</a>
-    <a href="{{ url_for('reports') }}">Reports</a>
-    <a href="{{ url_for('services') }}">Price List</a>
+    <a href="{{ url_for('index') }}">Billing POS</a>
+    <a href="{{ url_for('install_page') }}" class="nav-install-btn" title="Install Desktop App">📥 Desktop App</a>
+    {% if session.get('is_admin') %}
+      <a href="{{ url_for('history') }}">Bill History</a>
+      <a href="{{ url_for('reports') }}">Reports</a>
+      <a href="{{ url_for('services') }}">Price List & Items</a>
+      <a href="{{ url_for('logout') }}" style="color: #9a214b;">Logout (Admin)</a>
+    {% else %}
+      <a href="{{ url_for('login') }}" class="nav-admin-link">🔒 Admin</a>
+    {% endif %}
   </nav>
 </header>
 <main class="container">
@@ -22,6 +37,22 @@
 {% endwith %}
 {% block content %}{% endblock %}
 </main>
-<footer class="footer">Iread local billing • Data is stored on this computer</footer>
+<footer class="footer">
+  Iread Billing System • Cloud PostgreSQL
+  &nbsp;|&nbsp;
+  {% if session.get('is_admin') %}
+    Logged in as Admin &bull; <a href="{{ url_for('logout') }}" style="color: inherit;">Sign out</a>
+  {% else %}
+    <a href="{{ url_for('login') }}" style="color: inherit;">Admin Login</a>
+  {% endif %}
+</footer>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('{{ url_for("static", filename="sw.js") }}').catch(() => {});
+  });
+}
+</script>
 </body>
 </html>

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Admin Login | Iread{% endblock %}
+{% block content %}
+<div class="login-wrapper">
+  <div class="login-card">
+    <div class="login-header">
+      <div class="brandmark" style="margin: 0 auto 12px; width: 48px; height: 48px; font-size: 26px;">I</div>
+      <h2>Admin Login</h2>
+      <p class="muted">Access management, reports, and prices</p>
+    </div>
+
+    <form method="post" action="{{ url_for('login') }}">
+      <label>
+        Username
+        <input type="text" name="username" required autofocus autocomplete="username" placeholder="Enter admin username">
+      </label>
+      <label style="margin-top: 14px;">
+        Password
+        <input type="password" name="password" required autocomplete="current-password" placeholder="Enter password">
+      </label>
+      <button type="submit" class="pos-submit-btn" style="margin-top: 20px;">Sign In</button>
+    </form>
+
+    <div style="margin-top: 16px; text-align: center;">
+      <a href="{{ url_for('index') }}" class="muted" style="font-size: 12px; text-decoration: none;">← Back to Billing</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
