@@ -128,6 +128,17 @@ def init_db():
                     notes TEXT DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS maintenance_expenses (
+                    id SERIAL PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    machine_model TEXT DEFAULT '',
+                    amount REAL NOT NULL DEFAULT 0,
+                    expense_date TEXT NOT NULL,
+                    technician_or_vendor TEXT DEFAULT '',
+                    notes TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
                 """)
                 cur.execute("SELECT name FROM services")
                 existing = {row['name'] for row in cur.fetchall()}
@@ -252,6 +263,67 @@ def inventory_page():
             total_cost = sum(row.get("cost", 0.0) for row in items)
 
     return render_template("inventory.html", inventory=items, total_items=total_items, total_sheets=total_sheets, total_cost=total_cost)
+
+# ── Maintenance & Expenses (Drum, Ink, Repair, Other) ──
+@app.route("/maintenance", methods=["GET", "POST"])
+def maintenance_page():
+    if not DATABASE_URL:
+        return "DATABASE_URL missing", 500
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS maintenance_expenses (
+                id SERIAL PRIMARY KEY,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                machine_model TEXT DEFAULT '',
+                amount REAL NOT NULL DEFAULT 0,
+                expense_date TEXT NOT NULL,
+                technician_or_vendor TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            """)
+            if request.method == "POST":
+                action = request.form.get("action")
+                if action == "add":
+                    category = request.form.get("category", "Other").strip()
+                    title = request.form.get("title", "").strip()
+                    machine_model = request.form.get("machine_model", "").strip()
+                    amount = max(0.0, money(request.form.get("amount", 0)))
+                    expense_date = request.form.get("expense_date") or date.today().isoformat()
+                    technician_or_vendor = request.form.get("technician_or_vendor", "").strip()
+                    notes = request.form.get("notes", "").strip()
+                    created_at = datetime.now().isoformat(timespec="seconds")
+
+                    if not title or amount <= 0:
+                        flash("Please enter a valid description and cost amount.", "error")
+                    else:
+                        cur.execute("""
+                        INSERT INTO maintenance_expenses (category, title, machine_model, amount, expense_date, technician_or_vendor, notes, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (category, title, machine_model, amount, expense_date, technician_or_vendor, notes, created_at))
+                        conn.commit()
+                        flash(f"Logged maintenance expense: '{title}' ({inr(amount)}).", "success")
+
+                elif action == "delete":
+                    try:
+                        exp_id = int(request.form.get("expense_id"))
+                        cur.execute("DELETE FROM maintenance_expenses WHERE id=%s", (exp_id,))
+                        conn.commit()
+                        flash("Maintenance entry deleted.", "success")
+                    except Exception as e:
+                        conn.rollback()
+                        flash(f"Error deleting entry: {e}", "error")
+
+                return redirect(url_for("maintenance_page"))
+
+            cur.execute("SELECT * FROM maintenance_expenses ORDER BY expense_date DESC, id DESC")
+            rows = cur.fetchall()
+            total_count = len(rows)
+            total_expense = sum(r.get("amount", 0.0) for r in rows)
+
+    return render_template("maintenance.html", expenses=rows, total_count=total_count, total_expense=total_expense, today=date.today().isoformat())
 
 # ── Billing Route (Public / Fast POS) ──
 @app.route("/")

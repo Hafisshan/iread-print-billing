@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Maintenance & Expenses | Iread{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <p class="eyebrow">EQUIPMENT &amp; RUNNING COSTS</p>
+    <h1>Maintenance &amp; Expense Log</h1>
+    <p class="muted">Record printer drum changes, toner/ink refills, servicing, repairs, and other shop expenses.</p>
+  </div>
+  <div class="stats">
+    <div><span>Total Records</span><strong>{{ total_count }}</strong></div>
+    <div><span>Total Expenses</span><strong style="color: var(--accent);">{{ total_expense|inr }}</strong></div>
+  </div>
+</div>
+
+<!-- ── Quick Add Maintenance Cost Form ── -->
+<section class="panel">
+  <h2>+ Add Maintenance / Expense Cost</h2>
+  <form method="post" class="formgrid">
+    <input type="hidden" name="action" value="add">
+
+    <label>
+      Expense Category
+      <select name="category" id="expCategory" required onchange="handleCatChange(this.value)">
+        <option value="Drum Changing">Drum Changing</option>
+        <option value="Ink / Toner Cost">Ink / Toner Cost</option>
+        <option value="Machine Repair">Machine Repair / Servicing</option>
+        <option value="Spare Parts">Spare Parts Replacement</option>
+        <option value="Lamination Machine">Lamination Machine Maintenance</option>
+        <option value="Other">Other Maintenance / Expense</option>
+      </select>
+    </label>
+
+    <label>
+      Description / Item Title
+      <input name="title" id="expTitle" list="expPresets" required placeholder="e.g. Black Drum Unit replacement">
+      <datalist id="expPresets">
+        <option value="Black Drum Unit Replacement">
+        <option value="Color Drum Unit (Cyan/Magenta/Yellow)">
+        <option value="Black Toner Bottle / Cartridge Refill">
+        <option value="Color Toner Refill Kit">
+        <option value="Printer Roller & Blade Service">
+        <option value="Fuser Film / Heat Roller Repair">
+        <option value="Lamination Machine Heating Element Repair">
+        <option value="General Machine Full Service / Technician Visit">
+      </datalist>
+    </label>
+
+    <label>
+      Machine / Printer Model (optional)
+      <input name="machine_model" placeholder="e.g. Canon iR 2520, Epson L805">
+    </label>
+
+    <label>
+      Cost / Amount (₹)
+      <input name="amount" type="number" min="0" step="0.01" required placeholder="0.00">
+    </label>
+
+    <label>
+      Date
+      <input name="expense_date" type="date" value="{{ today }}" required>
+    </label>
+
+    <label>
+      Technician / Vendor Name (optional)
+      <input name="technician_or_vendor" placeholder="e.g. Authorized Service Center / Rajesh">
+    </label>
+
+    <label style="grid-column: span 2;">
+      Notes / Warranty details (optional)
+      <input name="notes" placeholder="e.g. 6 months warranty, invoice #543">
+    </label>
+
+    <div class="align-end" style="grid-column: span 4;">
+      <button class="btn primary big" type="submit">+ Save Maintenance Expense</button>
+    </div>
+  </form>
+</section>
+
+<!-- ── Maintenance Records Table ── -->
+<section class="panel">
+  <div class="section-title">
+    <h2>Expense History ({{ expenses|length }})</h2>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Category</th>
+          <th>Description</th>
+          <th>Machine / Model</th>
+          <th>Technician / Vendor</th>
+          <th>Cost (₹)</th>
+          <th>Notes</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if not expenses %}
+        <tr>
+          <td colspan="8" style="text-align: center; color: var(--muted); padding: 32px 0;">
+            No maintenance expenses recorded yet. Use the form above to log drum changes, ink, repairs, etc.
+          </td>
+        </tr>
+        {% endif %}
+        {% for exp in expenses %}
+        <tr>
+          <td style="white-space: nowrap; font-weight: 600;">{{ exp.expense_date }}</td>
+          <td>
+            <span class="tile-badge {% if 'Drum' in exp.category %}color{% elif 'Ink' in exp.category %}photo{% elif 'Repair' in exp.category %}service{% else %}bw{% endif %}">
+              {{ exp.category | upper }}
+            </span>
+          </td>
+          <td><strong>{{ exp.title }}</strong></td>
+          <td style="color: var(--muted);">{{ exp.machine_model or '-' }}</td>
+          <td>{{ exp.technician_or_vendor or '-' }}</td>
+          <td><strong style="color: var(--accent); font-size: 14px;">{{ exp.amount | inr }}</strong></td>
+          <td style="font-size: 11px; color: var(--muted);">{{ exp.notes or '-' }}</td>
+          <td>
+            <form method="post" style="display: inline;" onsubmit="return confirm('Delete this maintenance record: \'{{ exp.title|e }}\'?');">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="expense_id" value="{{ exp.id }}">
+              <button class="btn tiny danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+function handleCatChange(cat) {
+  const title = document.getElementById('expTitle');
+  if (cat === 'Drum Changing') {
+    title.placeholder = 'e.g. Black Drum Unit Replacement';
+  } else if (cat === 'Ink / Toner Cost') {
+    title.placeholder = 'e.g. Canon Black Toner Powder 1KG';
+  } else if (cat === 'Machine Repair') {
+    title.placeholder = 'e.g. Paper pickup roller service / sensor fix';
+  } else {
+    title.placeholder = 'e.g. Maintenance cost details';
+  }
+}
+</script>
+{% endblock %}
