@@ -20,11 +20,12 @@
   </div>
   <nav>
     <a href="{{ url_for('index') }}">Billing POS</a>
+    <a href="{{ url_for('inventory_page') }}" style="font-weight: 600;">📦 Paper &amp; Stock</a>
     <a href="{{ url_for('install_page') }}" class="nav-install-btn" title="Install Desktop App">📥 Desktop App</a>
     {% if session.get('is_admin') %}
       <a href="{{ url_for('history') }}">Bill History</a>
       <a href="{{ url_for('reports') }}">Reports</a>
-      <a href="{{ url_for('services') }}">Price List & Items</a>
+      <a href="{{ url_for('services') }}">Price List &amp; Items</a>
       <a href="{{ url_for('logout') }}" style="color: #9a214b;">Logout (Admin)</a>
     {% else %}
       <a href="{{ url_for('login') }}" class="nav-admin-link">🔒 Admin</a>

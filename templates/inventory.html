@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Paper & Lamination Inventory | Iread{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <p class="eyebrow">STOCK MANAGEMENT</p>
+    <h1>Paper &amp; Lamination Inventory</h1>
+    <p class="muted">Staff stock entry for paper reams/bundles, lamination sheets, and cost tracking.</p>
+  </div>
+  <div class="stats">
+    <div><span>Total Items</span><strong>{{ total_items }}</strong></div>
+    <div><span>Total Sheets</span><strong>{{ total_sheets }}</strong></div>
+    <div><span>Total Cost Value</span><strong>{{ total_cost|inr }}</strong></div>
+  </div>
+</div>
+
+<!-- ── Quick Add Stock Entry ── -->
+<section class="panel">
+  <h2>+ Add Inventory Stock</h2>
+  <form method="post" class="formgrid">
+    <input type="hidden" name="action" value="add">
+    
+    <label>
+      Category
+      <select name="category" id="itemCat" required onchange="updatePresets(this.value)">
+        <option value="Paper">Paper (Photostat / Laser / Photo)</option>
+        <option value="Lamination">Lamination Sheet</option>
+        <option value="Other">Other Material / Binding</option>
+      </select>
+    </label>
+
+    <label>
+      Item / Paper Name
+      <input name="item_name" id="itemNameInput" list="itemPresets" required placeholder="e.g. JK Copier A4 75gsm">
+      <datalist id="itemPresets">
+        <option value="JK Copier A4 75gsm">
+        <option value="B2B A4 75gsm">
+        <option value="Legal Paper 75gsm">
+        <option value="A3 Paper 75gsm">
+        <option value="Laser 12x18 220 gsm">
+        <option value="Laser 12x18 130 gsm">
+        <option value="Laser 12x18 Waterproof">
+        <option value="Laser 12x18 Sticker Sheet">
+        <option value="Glossy Photo Paper A4 130 gsm">
+        <option value="Glossy Photo Paper A4 220 gsm">
+        <option value="Glossy Photo Paper A3 220 gsm">
+      </datalist>
+    </label>
+
+    <label>
+      Size / Spec
+      <input name="size_spec" id="sizeInput" value="A4" placeholder="e.g. A4, Legal, A3, 12x18, ID Card">
+    </label>
+
+    <label>
+      No. of Bundles / Packets
+      <input name="bundles" id="bundlesInput" type="number" min="1" value="1" required oninput="calcTotalSheets()">
+    </label>
+
+    <label>
+      Sheets per Bundle
+      <input name="sheets_per_bundle" id="sheetsPerBundleInput" type="number" min="1" value="500" required oninput="calcTotalSheets()">
+    </label>
+
+    <label>
+      Total Sheets (Auto)
+      <input id="totalSheetsDisplay" type="text" readonly value="500" style="background: #f7f5f8; font-weight: 700; color: var(--accent);">
+    </label>
+
+    <label>
+      Total Cost (₹)
+      <input name="cost" type="number" min="0" step="0.01" required placeholder="0.00">
+    </label>
+
+    <label>
+      Supplier / Notes (optional)
+      <input name="notes" placeholder="e.g. Local vendor / Bill #123">
+    </label>
+
+    <div class="align-end" style="grid-column: span 4;">
+      <button class="btn primary big" type="submit">+ Save Stock Entry</button>
+    </div>
+  </form>
+</section>
+
+<!-- ── Stock List ── -->
+<section class="panel">
+  <div class="section-title">
+    <h2>Current Stock Inventory ({{ inventory|length }})</h2>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Item / Paper Name</th>
+          <th>Size</th>
+          <th>Bundles</th>
+          <th>Sheets / Bundle</th>
+          <th>Total Sheets Available</th>
+          <th>Cost</th>
+          <th>Updated On</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if not inventory %}
+        <tr>
+          <td colspan="9" style="text-align: center; color: var(--muted); padding: 32px 0;">
+            No inventory items recorded yet. Use the form above to add paper or lamination sheets.
+          </td>
+        </tr>
+        {% endif %}
+        {% for item in inventory %}
+        <tr>
+          <td>
+            <span class="tile-badge {% if item.category == 'Lamination' %}service{% elif item.category == 'Paper' %}bw{% else %}photo{% endif %}">
+              {{ item.category | upper }}
+            </span>
+          </td>
+          <td>
+            <strong>{{ item.item_name }}</strong>
+            {% if item.notes %}<span style="display: block; font-size: 11px; color: var(--muted);">{{ item.notes }}</span>{% endif %}
+          </td>
+          <td>{{ item.size_spec or '-' }}</td>
+          <td>{{ item.bundles }}</td>
+          <td>{{ item.sheets_per_bundle }}</td>
+          <td>
+            <strong style="color: var(--green); font-size: 14px;">{{ item.total_sheets }}</strong> sheets
+          </td>
+          <td><strong>{{ item.cost | inr }}</strong></td>
+          <td style="color: var(--muted); font-size: 11px;">
+            {{ item.updated_at[:10] if item.updated_at else '-' }}
+          </td>
+          <td>
+            <form method="post" style="display: inline;" onsubmit="return confirm('Delete stock entry for \'{{ item.item_name|e }}\'?');">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="item_id" value="{{ item.id }}">
+              <button class="btn tiny danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+function calcTotalSheets() {
+  const b = parseInt(document.getElementById('bundlesInput').value) || 0;
+  const s = parseInt(document.getElementById('sheetsPerBundleInput').value) || 0;
+  document.getElementById('totalSheetsDisplay').value = (b * s) + " sheets";
+}
+
+function updatePresets(cat) {
+  const list = document.getElementById('itemPresets');
+  const size = document.getElementById('sizeInput');
+  const sheets = document.getElementById('sheetsPerBundleInput');
+  if (cat === 'Lamination') {
+    list.innerHTML = `
+      <option value="Lamination Pouch A4">
+      <option value="Lamination Pouch Legal">
+      <option value="Lamination Pouch A3">
+      <option value="ID Card Lamination Pouch">
+      <option value="RC Book Lamination Pouch">
+    `;
+    size.value = 'A4';
+    sheets.value = '100';
+  } else if (cat === 'Paper') {
+    list.innerHTML = `
+      <option value="JK Copier A4 75gsm">
+      <option value="B2B A4 75gsm">
+      <option value="Legal Paper 75gsm">
+      <option value="A3 Paper 75gsm">
+      <option value="Laser 12x18 220 gsm">
+      <option value="Laser 12x18 130 gsm">
+      <option value="Laser 12x18 Waterproof">
+      <option value="Laser 12x18 Sticker Sheet">
+      <option value="Photo Paper A4 130 gsm">
+      <option value="Photo Paper A4 220 gsm">
+    `;
+    size.value = 'A4';
+    sheets.value = '500';
+  } else {
+    list.innerHTML = '';
+    size.value = '-';
+    sheets.value = '100';
+  }
+  calcTotalSheets();
+}
+calcTotalSheets();
+</script>
+{% endblock %}

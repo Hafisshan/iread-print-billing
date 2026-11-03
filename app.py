@@ -116,6 +116,18 @@ def init_db():
                     paper_sheets INTEGER NOT NULL DEFAULT 0,
                     color_units INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS inventory (
+                    id SERIAL PRIMARY KEY,
+                    category TEXT NOT NULL DEFAULT 'Paper',
+                    item_name TEXT NOT NULL,
+                    size_spec TEXT DEFAULT '',
+                    bundles INTEGER NOT NULL DEFAULT 1,
+                    sheets_per_bundle INTEGER NOT NULL DEFAULT 500,
+                    total_sheets INTEGER NOT NULL DEFAULT 500,
+                    cost REAL NOT NULL DEFAULT 0,
+                    notes TEXT DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
                 """)
                 cur.execute("SELECT name FROM services")
                 existing = {row['name'] for row in cur.fetchall()}
@@ -170,6 +182,76 @@ def logout():
 @app.route("/install")
 def install_page():
     return render_template("install.html")
+
+# ── Paper & Lamination Stock Inventory (Staff accessible) ──
+@app.route("/inventory", methods=["GET", "POST"])
+def inventory_page():
+    if not DATABASE_URL:
+        return "DATABASE_URL missing", 500
+    with db() as conn:
+        with conn.cursor() as cur:
+            # Ensure table exists in case init_db hasn't run yet
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id SERIAL PRIMARY KEY,
+                category TEXT NOT NULL DEFAULT 'Paper',
+                item_name TEXT NOT NULL,
+                size_spec TEXT DEFAULT '',
+                bundles INTEGER NOT NULL DEFAULT 1,
+                sheets_per_bundle INTEGER NOT NULL DEFAULT 500,
+                total_sheets INTEGER NOT NULL DEFAULT 500,
+                cost REAL NOT NULL DEFAULT 0,
+                notes TEXT DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+            """)
+            if request.method == "POST":
+                action = request.form.get("action")
+                if action == "add":
+                    category = request.form.get("category", "Paper").strip()
+                    item_name = request.form.get("item_name", "").strip()
+                    size_spec = request.form.get("size_spec", "").strip()
+                    try:
+                        bundles = max(1, int(request.form.get("bundles", 1)))
+                        sheets_per_bundle = max(1, int(request.form.get("sheets_per_bundle", 500)))
+                        total_sheets = bundles * sheets_per_bundle
+                        cost = max(0.0, money(request.form.get("cost", 0)))
+                        notes = request.form.get("notes", "").strip()
+                        updated_at = datetime.now().isoformat(timespec="seconds")
+
+                        if not item_name:
+                            raise ValueError("Item name cannot be empty")
+
+                        cur.execute("""
+                        INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, cost, notes, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, cost, notes, updated_at))
+                        conn.commit()
+                        flash(f"Added {bundles} bundle(s) ({total_sheets} sheets) of '{item_name}'.", "success")
+                    except Exception as e:
+                        conn.rollback()
+                        flash(f"Error adding stock entry: {e}", "error")
+
+                elif action == "delete":
+                    try:
+                        item_id = int(request.form.get("item_id"))
+                        cur.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
+                        conn.commit()
+                        flash("Inventory entry removed.", "success")
+                    except Exception as e:
+                        conn.rollback()
+                        flash(f"Error removing entry: {e}", "error")
+
+                return redirect(url_for("inventory_page"))
+
+            cur.execute("SELECT * FROM inventory ORDER BY id DESC")
+            items = cur.fetchall()
+
+            total_items = len(items)
+            total_sheets = sum(row.get("total_sheets", 0) for row in items)
+            total_cost = sum(row.get("cost", 0.0) for row in items)
+
+    return render_template("inventory.html", inventory=items, total_items=total_items, total_sheets=total_sheets, total_cost=total_cost)
 
 # ── Billing Route (Public / Fast POS) ──
 @app.route("/")
