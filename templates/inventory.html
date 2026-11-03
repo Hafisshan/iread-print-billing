@@ -14,7 +14,7 @@
   </div>
 </div>
 
-<!-- ── Quick Add Stock Entry ── -->
+<!-- ── Quick Add Stock Entry (Staff and Admin) ── -->
 <section class="panel">
   <h2>+ Add Inventory Stock</h2>
   <form method="post" class="formgrid">
@@ -87,6 +87,9 @@
 <section class="panel">
   <div class="section-title">
     <h2>Current Stock Inventory ({{ inventory|length }})</h2>
+    {% if not session.get('is_admin') %}
+      <span class="muted" style="font-size: 12px;">🔒 Deletion &amp; editing require <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
+    {% endif %}
   </div>
   <div class="tablewrap">
     <table>
@@ -100,13 +103,15 @@
           <th>Total Sheets Available</th>
           <th>Cost</th>
           <th>Updated On</th>
-          <th>Actions</th>
+          {% if session.get('is_admin') %}
+            <th>Actions (Admin)</th>
+          {% endif %}
         </tr>
       </thead>
       <tbody>
         {% if not inventory %}
         <tr>
-          <td colspan="9" style="text-align: center; color: var(--muted); padding: 32px 0;">
+          <td colspan="{% if session.get('is_admin') %}9{% else %}8{% endif %}" style="text-align: center; color: var(--muted); padding: 32px 0;">
             No inventory items recorded yet. Use the form above to add paper or lamination sheets.
           </td>
         </tr>
@@ -132,19 +137,90 @@
           <td style="color: var(--muted); font-size: 11px;">
             {{ item.updated_at[:10] if item.updated_at else '-' }}
           </td>
+          {% if session.get('is_admin') %}
           <td>
-            <form method="post" style="display: inline;" onsubmit="return confirm('Delete stock entry for \'{{ item.item_name|e }}\'?');">
-              <input type="hidden" name="action" value="delete">
-              <input type="hidden" name="item_id" value="{{ item.id }}">
-              <button class="btn tiny danger" type="submit">Delete</button>
-            </form>
+            <div class="table-actions">
+              <button type="button" class="btn tiny secondary" onclick="openEditModal({{ item | tojson }})">Edit</button>
+              <form method="post" style="display: inline;" onsubmit="return confirm('Permanently delete stock entry for \'{{ item.item_name|e }}\'?');">
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="item_id" value="{{ item.id }}">
+                <button class="btn tiny danger" type="submit">Delete</button>
+              </form>
+            </div>
           </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+
+{% if session.get('is_admin') %}
+<!-- ── Stock Edit Modal (Admin only) ── -->
+<div class="modal-backdrop" id="editModalBackdrop"></div>
+<div class="item-modal" id="editModal" role="dialog" aria-modal="true" style="padding-bottom: 24px;">
+  <div class="modal-drag-bar"></div>
+  <div class="modal-header">
+    <strong class="modal-title">Edit Stock Item</strong>
+    <button class="modal-close" id="editModalClose" type="button" aria-label="Close">×</button>
+  </div>
+  <form method="post" id="editStockForm">
+    <input type="hidden" name="action" value="update">
+    <input type="hidden" name="item_id" id="editItemId">
+    <div class="modal-fields">
+      <div class="mf-row">
+        <div class="mf-group">
+          <label>Category</label>
+          <select name="category" id="editCategory" class="cart-select" required>
+            <option value="Paper">Paper</option>
+            <option value="Lamination">Lamination Sheet</option>
+            <option value="Other">Other Material</option>
+          </select>
+        </div>
+        <div class="mf-group">
+          <label>Item Name</label>
+          <input name="item_name" id="editItemName" required class="modal-rate-input" style="font-size: 14px; text-align: left;">
+        </div>
+      </div>
+      <div class="mf-row">
+        <div class="mf-group">
+          <label>Size / Spec</label>
+          <input name="size_spec" id="editSizeSpec" class="modal-rate-input" style="font-size: 14px; text-align: left;">
+        </div>
+        <div class="mf-group">
+          <label>Bundles</label>
+          <input name="bundles" id="editBundles" type="number" min="1" required class="modal-rate-input" style="font-size: 14px; text-align: right;" oninput="calcEditSheets()">
+        </div>
+      </div>
+      <div class="mf-row">
+        <div class="mf-group">
+          <label>Sheets / Bundle</label>
+          <input name="sheets_per_bundle" id="editSheetsPerBundle" type="number" min="1" required class="modal-rate-input" style="font-size: 14px; text-align: right;" oninput="calcEditSheets()">
+        </div>
+        <div class="mf-group">
+          <label>Total Sheets</label>
+          <input id="editTotalSheets" readonly class="modal-rate-input" style="font-size: 14px; text-align: right; background: #f7f5f8; font-weight: 700; color: var(--accent);">
+        </div>
+      </div>
+      <div class="mf-row">
+        <div class="mf-group">
+          <label>Cost (₹)</label>
+          <input name="cost" id="editCost" type="number" min="0" step="0.01" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
+        </div>
+        <div class="mf-group">
+          <label>Notes</label>
+          <input name="notes" id="editNotes" class="modal-rate-input" style="font-size: 14px; text-align: left;">
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top: 16px;">
+      <button type="button" class="pos-btn secondary" id="editModalCancel">Cancel</button>
+      <button type="submit" class="pos-btn primary">Save Changes</button>
+    </div>
+  </form>
+</div>
+{% endif %}
 
 <script>
 function calcTotalSheets() {
@@ -190,5 +266,39 @@ function updatePresets(cat) {
   calcTotalSheets();
 }
 calcTotalSheets();
+
+// Edit Modal Functions (Admin)
+function calcEditSheets() {
+  const b = parseInt(document.getElementById('editBundles').value) || 0;
+  const s = parseInt(document.getElementById('editSheetsPerBundle').value) || 0;
+  document.getElementById('editTotalSheets').value = (b * s) + " sheets";
+}
+
+function openEditModal(item) {
+  document.getElementById('editItemId').value = item.id;
+  document.getElementById('editCategory').value = item.category;
+  document.getElementById('editItemName').value = item.item_name;
+  document.getElementById('editSizeSpec').value = item.size_spec || '';
+  document.getElementById('editBundles').value = item.bundles;
+  document.getElementById('editSheetsPerBundle').value = item.sheets_per_bundle;
+  document.getElementById('editCost').value = item.cost;
+  document.getElementById('editNotes').value = item.notes || '';
+  calcEditSheets();
+  document.getElementById('editModal').classList.add('open');
+  document.getElementById('editModalBackdrop').classList.add('open');
+}
+
+function closeEditModal() {
+  const m = document.getElementById('editModal');
+  const b = document.getElementById('editModalBackdrop');
+  if (m) m.classList.remove('open');
+  if (b) b.classList.remove('open');
+}
+
+if (document.getElementById('editModalClose')) {
+  document.getElementById('editModalClose').addEventListener('click', closeEditModal);
+  document.getElementById('editModalCancel').addEventListener('click', closeEditModal);
+  document.getElementById('editModalBackdrop').addEventListener('click', closeEditModal);
+}
 </script>
 {% endblock %}

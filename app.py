@@ -244,6 +244,9 @@ def inventory_page():
                         flash(f"Error adding stock entry: {e}", "error")
 
                 elif action == "delete":
+                    if not session.get("is_admin"):
+                        flash("Admin login required to delete stock items.", "error")
+                        return redirect(url_for("login", next=request.path))
                     try:
                         item_id = int(request.form.get("item_id"))
                         cur.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
@@ -252,6 +255,36 @@ def inventory_page():
                     except Exception as e:
                         conn.rollback()
                         flash(f"Error removing entry: {e}", "error")
+
+                elif action == "update":
+                    if not session.get("is_admin"):
+                        flash("Admin login required to edit stock items.", "error")
+                        return redirect(url_for("login", next=request.path))
+                    try:
+                        item_id = int(request.form.get("item_id"))
+                        category = request.form.get("category", "Paper").strip()
+                        item_name = request.form.get("item_name", "").strip()
+                        size_spec = request.form.get("size_spec", "").strip()
+                        bundles = max(1, int(request.form.get("bundles", 1)))
+                        sheets_per_bundle = max(1, int(request.form.get("sheets_per_bundle", 500)))
+                        total_sheets = bundles * sheets_per_bundle
+                        cost = max(0.0, money(request.form.get("cost", 0)))
+                        notes = request.form.get("notes", "").strip()
+                        updated_at = datetime.now().isoformat(timespec="seconds")
+
+                        if not item_name:
+                            raise ValueError("Item name cannot be empty")
+
+                        cur.execute("""
+                        UPDATE inventory 
+                        SET category=%s, item_name=%s, size_spec=%s, bundles=%s, sheets_per_bundle=%s, total_sheets=%s, cost=%s, notes=%s, updated_at=%s
+                        WHERE id=%s
+                        """, (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, cost, notes, updated_at, item_id))
+                        conn.commit()
+                        flash(f"Updated inventory item '{item_name}'.", "success")
+                    except Exception as e:
+                        conn.rollback()
+                        flash(f"Error updating stock entry: {e}", "error")
 
                 return redirect(url_for("inventory_page"))
 
