@@ -1,22 +1,38 @@
 {% extends "base.html" %}
-{% block title %}Paper & Lamination Inventory | Iread{% endblock %}
+{% block title %}Paper & Lamination Stock Inventory | Iread{% endblock %}
 {% block content %}
 <div class="pagehead">
   <div>
-    <p class="eyebrow">STOCK MANAGEMENT</p>
-    <h1>Paper &amp; Lamination Inventory</h1>
-    <p class="muted">Staff stock entry for paper reams/bundles, lamination sheets, and cost tracking.</p>
+    <p class="eyebrow">STOCK MANAGEMENT &amp; AUDIT</p>
+    <h1>Paper &amp; Stock Inventory</h1>
+    <p class="muted">Live paper sheet balance, automated deductions, purchases, and stock ledger.</p>
   </div>
   <div class="stats">
-    <div><span>Total Items</span><strong>{{ total_items }}</strong></div>
-    <div><span>Total Sheets</span><strong>{{ total_sheets }}</strong></div>
-    <div><span>Total Cost Value</span><strong>{{ total_cost|inr }}</strong></div>
+    <div><span>Total Paper Types</span><strong>{{ total_items }}</strong></div>
+    <div><span>Available Sheets</span><strong style="color: var(--green);">{{ total_available_sheets }}</strong></div>
+    {% if is_admin %}
+    <div><span>Stock Valuation</span><strong style="color: var(--accent);">{{ total_valuation|inr }}</strong></div>
+    {% endif %}
   </div>
 </div>
 
-<!-- ── Quick Add Stock Entry (Staff and Admin) ── -->
+<!-- ── Low Stock Alert Banner (if any) ── -->
+{% if low_stock_items %}
+<div class="flash error" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+  <div>
+    <strong>⚠️ Low Stock Alert:</strong> The following paper types are below reorder level:
+    {% for item in low_stock_items %}
+      <span style="display: inline-block; background: #fff; padding: 2px 8px; border-radius: 6px; margin: 2px 4px; font-weight: 700; color: #9a214b;">
+        {{ item.item_name }} ({{ item.available_sheets }} left / min {{ item.reorder_level }})
+      </span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Quick Add / Purchase Form ── -->
 <section class="panel">
-  <h2>+ Add Inventory Stock</h2>
+  <h2>+ Record Paper Purchase / Add Stock</h2>
   <form method="post" class="formgrid">
     <input type="hidden" name="action" value="add">
     
@@ -30,20 +46,20 @@
     </label>
 
     <label>
-      Item / Paper Name
-      <input name="item_name" id="itemNameInput" list="itemPresets" required placeholder="e.g. JK Copier A4 75gsm">
+      Paper / Material Name
+      <input name="item_name" id="itemNameInput" list="itemPresets" required placeholder="e.g. A4 75 GSM (JK Copier)">
       <datalist id="itemPresets">
-        <option value="JK Copier A4 75gsm">
-        <option value="B2B A4 75gsm">
-        <option value="Legal Paper 75gsm">
-        <option value="A3 Paper 75gsm">
-        <option value="Laser 12x18 220 gsm">
-        <option value="Laser 12x18 130 gsm">
+        <option value="A4 75 GSM (JK Copier)">
+        <option value="Legal Paper 75 GSM">
+        <option value="A3 Paper 75 GSM">
+        <option value="A4 Photo Paper 130 GSM">
+        <option value="A4 Photo Paper 220 GSM">
+        <option value="A3 Photo Paper 220 GSM">
+        <option value="Laser 12x18 130 GSM">
+        <option value="Laser 12x18 220 GSM">
         <option value="Laser 12x18 Waterproof">
         <option value="Laser 12x18 Sticker Sheet">
-        <option value="Glossy Photo Paper A4 130 gsm">
-        <option value="Glossy Photo Paper A4 220 gsm">
-        <option value="Glossy Photo Paper A3 220 gsm">
+        <option value="Laser 12x18 Sticker Waterproof">
       </datalist>
     </label>
 
@@ -53,7 +69,7 @@
     </label>
 
     <label>
-      No. of Bundles / Packets
+      No. of Bundles / Reams
       <input name="bundles" id="bundlesInput" type="number" min="1" value="1" required oninput="calcTotalSheets()">
     </label>
 
@@ -67,28 +83,37 @@
       <input id="totalSheetsDisplay" type="text" readonly value="500" style="background: #f7f5f8; font-weight: 700; color: var(--accent);">
     </label>
 
+    {% if is_admin %}
     <label>
-      Total Cost (₹)
+      Total Purchase Cost (₹)
       <input name="cost" type="number" min="0" step="0.01" required placeholder="0.00">
     </label>
+    {% else %}
+    <input type="hidden" name="cost" value="0">
+    {% endif %}
 
     <label>
-      Supplier / Notes (optional)
-      <input name="notes" placeholder="e.g. Local vendor / Bill #123">
+      Reorder Alert Level (Sheets)
+      <input name="reorder_level" type="number" min="10" value="100" required>
+    </label>
+
+    <label style="{% if is_admin %}grid-column: span 4;{% else %}grid-column: span 3;{% endif %}">
+      Supplier / Invoice Reference (optional)
+      <input name="notes" placeholder="e.g. Bill #1042 / Sree Paper Mart">
     </label>
 
     <div class="align-end" style="grid-column: span 4;">
-      <button class="btn primary big" type="submit">+ Save Stock Entry</button>
+      <button class="btn primary big" type="submit">+ Record Purchase / Stock</button>
     </div>
   </form>
 </section>
 
-<!-- ── Stock List ── -->
+<!-- ── Current Available Stock Table ── -->
 <section class="panel">
   <div class="section-title">
-    <h2>Current Stock Inventory ({{ inventory|length }})</h2>
-    {% if not session.get('is_admin') %}
-      <span class="muted" style="font-size: 12px;">🔒 Deletion &amp; editing require <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
+    <h2>Live Paper Stock Balance ({{ inventory|length }})</h2>
+    {% if not is_admin %}
+      <span class="muted" style="font-size: 12px;">🔒 Deletion, cost valuation &amp; edits require <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
     {% endif %}
   </div>
   <div class="tablewrap">
@@ -96,28 +121,31 @@
       <thead>
         <tr>
           <th>Category</th>
-          <th>Item / Paper Name</th>
+          <th>Paper / Item Name</th>
           <th>Size</th>
-          <th>Bundles</th>
-          <th>Sheets / Bundle</th>
-          <th>Total Sheets Available</th>
-          <th>Cost</th>
-          <th>Updated On</th>
-          {% if session.get('is_admin') %}
-            <th>Actions (Admin)</th>
+          <th>Current Available Stock</th>
+          <th>Status</th>
+          {% if is_admin %}
+          <th>Cost / Sheet</th>
+          <th>Total Cost</th>
+          <th>Valuation</th>
+          {% endif %}
+          <th>Last Updated</th>
+          {% if is_admin %}
+          <th>Actions (Admin)</th>
           {% endif %}
         </tr>
       </thead>
       <tbody>
         {% if not inventory %}
         <tr>
-          <td colspan="{% if session.get('is_admin') %}9{% else %}8{% endif %}" style="text-align: center; color: var(--muted); padding: 32px 0;">
+          <td colspan="{% if is_admin %}10{% else %}6{% endif %}" style="text-align: center; color: var(--muted); padding: 32px 0;">
             No inventory items recorded yet. Use the form above to add paper or lamination sheets.
           </td>
         </tr>
         {% endif %}
         {% for item in inventory %}
-        <tr>
+        <tr {% if item.available_sheets <= item.reorder_level %}style="background: #fff8f8;"{% endif %}>
           <td>
             <span class="tile-badge {% if item.category == 'Lamination' %}service{% elif item.category == 'Paper' %}bw{% else %}photo{% endif %}">
               {{ item.category | upper }}
@@ -128,18 +156,30 @@
             {% if item.notes %}<span style="display: block; font-size: 11px; color: var(--muted);">{{ item.notes }}</span>{% endif %}
           </td>
           <td>{{ item.size_spec or '-' }}</td>
-          <td>{{ item.bundles }}</td>
-          <td>{{ item.sheets_per_bundle }}</td>
           <td>
-            <strong style="color: var(--green); font-size: 14px;">{{ item.total_sheets }}</strong> sheets
+            <strong style="color: {% if item.available_sheets <= item.reorder_level %}#9a214b{% else %}var(--green){% endif %}; font-size: 15px;">
+              {{ item.available_sheets }}
+            </strong> sheets
           </td>
-          <td><strong>{{ item.cost | inr }}</strong></td>
+          <td>
+            {% if item.available_sheets <= item.reorder_level %}
+              <span class="status-badge status-disabled">LOW STOCK</span>
+            {% else %}
+              <span class="status-badge status-active">IN STOCK</span>
+            {% endif %}
+          </td>
+          {% if is_admin %}
+          <td>₹{{ '%.3f'|format(item.cost_per_sheet) }}</td>
+          <td>{{ item.cost | inr }}</td>
+          <td style="color: var(--accent); font-weight: 700;">{{ (item.available_sheets * item.cost_per_sheet) | inr }}</td>
+          {% endif %}
           <td style="color: var(--muted); font-size: 11px;">
             {{ item.updated_at[:10] if item.updated_at else '-' }}
           </td>
-          {% if session.get('is_admin') %}
+          {% if is_admin %}
           <td>
             <div class="table-actions">
+              <button type="button" class="btn tiny secondary" onclick="openAdjustModal({{ item | tojson }})">Adjust</button>
               <button type="button" class="btn tiny secondary" onclick="openEditModal({{ item | tojson }})">Edit</button>
               <form method="post" style="display: inline;" onsubmit="return confirm('Permanently delete stock entry for \'{{ item.item_name|e }}\'?');">
                 <input type="hidden" name="action" value="delete">
@@ -156,8 +196,104 @@
   </div>
 </section>
 
-{% if session.get('is_admin') %}
-<!-- ── Stock Edit Modal (Admin only) ── -->
+<!-- ── Stock Movement Audit Ledger ── -->
+<section class="panel">
+  <div class="section-title">
+    <h2>Recent Stock Movement Ledger (Audit Trail)</h2>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date / Time</th>
+          <th>Paper Item</th>
+          <th>Type</th>
+          <th>Quantity Change</th>
+          <th>Balance After</th>
+          <th>Ref / Bill</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if not movements %}
+        <tr>
+          <td colspan="7" class="muted" style="text-align: center; padding: 24px;">No stock movements recorded yet.</td>
+        </tr>
+        {% endif %}
+        {% for m in movements %}
+        <tr>
+          <td style="font-size: 11px; white-space: nowrap;">{{ m.created_at[:19].replace('T', ' ') }}</td>
+          <td><strong>{{ m.item_name }}</strong></td>
+          <td>
+            <span class="tile-badge {% if m.movement_type == 'PURCHASE' %}service{% elif m.movement_type == 'SALE' %}bw{% elif m.movement_type == 'DAMAGE' %}color{% else %}photo{% endif %}">
+              {{ m.movement_type }}
+            </span>
+          </td>
+          <td style="font-weight: 700; color: {% if m.quantity < 0 %}#9a214b{% else %}var(--green){% endif %};">
+            {% if m.quantity > 0 %}+{% endif %}{{ m.quantity }} sheets
+          </td>
+          <td><strong>{{ m.balance_after }}</strong> sheets</td>
+          <td>
+            {% if m.reference_id and m.reference_id.startswith('IR') %}
+              <a href="{{ url_for('history', q=m.reference_id) }}" style="color: var(--accent); font-weight: 600; text-decoration: none;">
+                {{ m.reference_id }}
+              </a>
+            {% else %}
+              {{ m.reference_id or '-' }}
+            {% endif %}
+          </td>
+          <td style="font-size: 11px; color: var(--muted);">{{ m.notes or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if is_admin %}
+<!-- ── Manual Stock Adjustment Modal ── -->
+<div class="modal-backdrop" id="adjustModalBackdrop"></div>
+<div class="item-modal" id="adjustModal" role="dialog" aria-modal="true" style="padding-bottom: 24px;">
+  <div class="modal-drag-bar"></div>
+  <div class="modal-header">
+    <strong class="modal-title">Manual Stock Adjustment / Waste</strong>
+    <button class="modal-close" id="adjustModalClose" type="button" aria-label="Close">×</button>
+  </div>
+  <form method="post">
+    <input type="hidden" name="action" value="adjust">
+    <input type="hidden" name="item_id" id="adjItemId">
+    <div class="modal-fields">
+      <div>
+        <label>Paper Item</label>
+        <input id="adjItemName" readonly class="modal-rate-input" style="font-size: 14px; text-align: left; background: #f7f5f8;">
+      </div>
+      <div class="mf-row">
+        <div class="mf-group">
+          <label>Adjustment Type</label>
+          <select name="adj_type" class="cart-select" required>
+            <option value="DAMAGE">Damaged / Wasted Paper (-)</option>
+            <option value="COUNT_CORRECTION">Inventory Count Correction (+/-)</option>
+            <option value="RETURN">Customer Return (+)</option>
+          </select>
+        </div>
+        <div class="mf-group">
+          <label>Sheets Quantity</label>
+          <input name="sheets_change" type="number" required placeholder="e.g. -10 or 25" class="modal-rate-input" style="font-size: 15px; text-align: right;">
+        </div>
+      </div>
+      <div>
+        <label>Reason / Reference</label>
+        <input name="reason" required placeholder="e.g. Printer paper jam wastage / recount" class="modal-rate-input" style="font-size: 14px; text-align: left;">
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top: 16px;">
+      <button type="button" class="pos-btn secondary" id="adjustModalCancel">Cancel</button>
+      <button type="submit" class="pos-btn primary">Record Adjustment</button>
+    </div>
+  </form>
+</div>
+
+<!-- ── Stock Edit Modal ── -->
 <div class="modal-backdrop" id="editModalBackdrop"></div>
 <div class="item-modal" id="editModal" role="dialog" aria-modal="true" style="padding-bottom: 24px;">
   <div class="modal-drag-bar"></div>
@@ -189,29 +325,23 @@
           <input name="size_spec" id="editSizeSpec" class="modal-rate-input" style="font-size: 14px; text-align: left;">
         </div>
         <div class="mf-group">
-          <label>Bundles</label>
-          <input name="bundles" id="editBundles" type="number" min="1" required class="modal-rate-input" style="font-size: 14px; text-align: right;" oninput="calcEditSheets()">
+          <label>Available Sheets</label>
+          <input name="available_sheets" id="editAvailSheets" type="number" min="0" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
         </div>
       </div>
       <div class="mf-row">
         <div class="mf-group">
-          <label>Sheets / Bundle</label>
-          <input name="sheets_per_bundle" id="editSheetsPerBundle" type="number" min="1" required class="modal-rate-input" style="font-size: 14px; text-align: right;" oninput="calcEditSheets()">
-        </div>
-        <div class="mf-group">
-          <label>Total Sheets</label>
-          <input id="editTotalSheets" readonly class="modal-rate-input" style="font-size: 14px; text-align: right; background: #f7f5f8; font-weight: 700; color: var(--accent);">
-        </div>
-      </div>
-      <div class="mf-row">
-        <div class="mf-group">
-          <label>Cost (₹)</label>
+          <label>Total Batch Cost (₹)</label>
           <input name="cost" id="editCost" type="number" min="0" step="0.01" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
         </div>
         <div class="mf-group">
-          <label>Notes</label>
-          <input name="notes" id="editNotes" class="modal-rate-input" style="font-size: 14px; text-align: left;">
+          <label>Reorder Level (Sheets)</label>
+          <input name="reorder_level" id="editReorderLevel" type="number" min="10" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
         </div>
+      </div>
+      <div>
+        <label>Notes / Supplier</label>
+        <input name="notes" id="editNotes" class="modal-rate-input" style="font-size: 14px; text-align: left;">
       </div>
     </div>
     <div class="modal-actions" style="margin-top: 16px;">
@@ -245,16 +375,17 @@ function updatePresets(cat) {
     sheets.value = '100';
   } else if (cat === 'Paper') {
     list.innerHTML = `
-      <option value="JK Copier A4 75gsm">
-      <option value="B2B A4 75gsm">
-      <option value="Legal Paper 75gsm">
-      <option value="A3 Paper 75gsm">
-      <option value="Laser 12x18 220 gsm">
-      <option value="Laser 12x18 130 gsm">
+      <option value="A4 75 GSM (JK Copier)">
+      <option value="Legal Paper 75 GSM">
+      <option value="A3 Paper 75 GSM">
+      <option value="A4 Photo Paper 130 GSM">
+      <option value="A4 Photo Paper 220 GSM">
+      <option value="A3 Photo Paper 220 GSM">
+      <option value="Laser 12x18 130 GSM">
+      <option value="Laser 12x18 220 GSM">
       <option value="Laser 12x18 Waterproof">
       <option value="Laser 12x18 Sticker Sheet">
-      <option value="Photo Paper A4 130 gsm">
-      <option value="Photo Paper A4 220 gsm">
+      <option value="Laser 12x18 Sticker Waterproof">
     `;
     size.value = 'A4';
     sheets.value = '500';
@@ -267,11 +398,23 @@ function updatePresets(cat) {
 }
 calcTotalSheets();
 
-// Edit Modal Functions (Admin)
-function calcEditSheets() {
-  const b = parseInt(document.getElementById('editBundles').value) || 0;
-  const s = parseInt(document.getElementById('editSheetsPerBundle').value) || 0;
-  document.getElementById('editTotalSheets').value = (b * s) + " sheets";
+// Modal Functions (Admin)
+function openAdjustModal(item) {
+  document.getElementById('adjItemId').value = item.id;
+  document.getElementById('adjItemName').value = item.item_name + ' (Current: ' + item.available_sheets + ' sheets)';
+  document.getElementById('adjustModal').classList.add('open');
+  document.getElementById('adjustModalBackdrop').classList.add('open');
+}
+function closeAdjustModal() {
+  const m = document.getElementById('adjustModal');
+  const b = document.getElementById('adjustModalBackdrop');
+  if (m) m.classList.remove('open');
+  if (b) b.classList.remove('open');
+}
+if (document.getElementById('adjustModalClose')) {
+  document.getElementById('adjustModalClose').addEventListener('click', closeAdjustModal);
+  document.getElementById('adjustModalCancel').addEventListener('click', closeAdjustModal);
+  document.getElementById('adjustModalBackdrop').addEventListener('click', closeAdjustModal);
 }
 
 function openEditModal(item) {
@@ -279,22 +422,19 @@ function openEditModal(item) {
   document.getElementById('editCategory').value = item.category;
   document.getElementById('editItemName').value = item.item_name;
   document.getElementById('editSizeSpec').value = item.size_spec || '';
-  document.getElementById('editBundles').value = item.bundles;
-  document.getElementById('editSheetsPerBundle').value = item.sheets_per_bundle;
+  document.getElementById('editAvailSheets').value = item.available_sheets !== undefined ? item.available_sheets : item.total_sheets;
   document.getElementById('editCost').value = item.cost;
+  document.getElementById('editReorderLevel').value = item.reorder_level || 100;
   document.getElementById('editNotes').value = item.notes || '';
-  calcEditSheets();
   document.getElementById('editModal').classList.add('open');
   document.getElementById('editModalBackdrop').classList.add('open');
 }
-
 function closeEditModal() {
   const m = document.getElementById('editModal');
   const b = document.getElementById('editModalBackdrop');
   if (m) m.classList.remove('open');
   if (b) b.classList.remove('open');
 }
-
 if (document.getElementById('editModalClose')) {
   document.getElementById('editModalClose').addEventListener('click', closeEditModal);
   document.getElementById('editModalCancel').addEventListener('click', closeEditModal);

@@ -25,7 +25,13 @@
       <button class="cat-tab" data-cat="color">Colour</button>
       <button class="cat-tab" data-cat="photo">Photo</button>
       <button class="cat-tab" data-cat="service">Services</button>
-      <button type="button" class="cat-tab custom-add" id="addCustomItemBtn">+ Custom Item</button>
+    </div>
+
+    <!-- Custom item quick button -->
+    <div style="padding: 10px 14px 4px; display: flex; gap: 8px;">
+      <button type="button" id="addCustomItemBtn" class="btn secondary tiny" style="width: 100%; border: 1.5px dashed #a33b5c; color: var(--accent); font-weight: 700; background: #fff;">
+        + Custom / Other Item
+      </button>
     </div>
 
     <!-- Tiles -->
@@ -36,12 +42,18 @@
         data-id="{{ s.id }}"
         data-name="{{ s.name }}"
         data-rate="{{ s.rate }}"
+        data-doublerate="{{ s.double_rate or '' }}"
         data-type="{{ s.print_type }}"
         data-size="{{ s.paper_size }}"
         data-cat="{{ s.print_type }}">
         <span class="tile-badge {{ s.print_type }}">{{ s.print_type | upper }}</span>
         <span class="tile-name">{{ s.name }}</span>
-        <span class="tile-rate">{{ s.rate | inr }}</span>
+        <span class="tile-rate">
+          {{ s.rate | inr }}
+          {% if s.double_rate %}
+            <span style="font-size: 10px; color: var(--muted); font-weight: 500;">/ Dbl {{ s.double_rate | inr }}</span>
+          {% endif %}
+        </span>
       </button>
       {% endfor %}
     </div>
@@ -136,16 +148,17 @@
       <div class="mf-group">
         <label>Sides</label>
         <div class="seg-ctrl" id="sidesCtrl">
-          <button type="button" class="seg-btn active" data-val="Single">Single</button>
-          <button type="button" class="seg-btn" data-val="Double-sided">Double</button>
+          <button type="button" class="seg-btn active" data-val="Single">Single Side</button>
+          <button type="button" class="seg-btn" data-val="Double-sided">Double Side</button>
         </div>
       </div>
       <div class="mf-group">
-        <label>Rate / page (₹)</label>
+        <label>Rate / unit (₹)</label>
         <input id="mRate" class="modal-rate-input" type="number" min="0" step="0.01">
       </div>
     </div>
     <div class="modal-line-total">
+      Estimated Sheets: <span id="mSheets" style="font-weight:700; color:var(--ink);">1</span> &nbsp;|&nbsp;
       Amount: <strong id="mAmount">₹0.00</strong>
     </div>
   </div>
@@ -158,9 +171,9 @@
 
 <script>
 /* ─────────── State ─────────── */
-let cart = [];          // [{id,name,rate,type,size,qty,pages,sides,lineTotal}]
+let cart = [];          // [{id,name,rate,singleRate,doubleRate,type,size,qty,pages,sides,lineTotal}]
 let editingIdx = null;  // index of cart item being edited (null = new)
-let activeTile = null;
+let currentItemConfig = null;
 
 /* ─────────── Category filter ─────────── */
 document.getElementById('catTabs').addEventListener('click', e => {
@@ -178,12 +191,15 @@ document.getElementById('catTabs').addEventListener('click', e => {
 document.getElementById('tileGrid').addEventListener('click', e => {
   const tile = e.target.closest('.tile');
   if (!tile) return;
-  activeTile = tile;
   editingIdx = null;
+  const sRate = parseFloat(tile.dataset.rate) || 0;
+  const dRate = tile.dataset.doublerate ? parseFloat(tile.dataset.doublerate) : sRate;
   openModal({
     id: tile.dataset.id,
     name: tile.dataset.name,
-    rate: parseFloat(tile.dataset.rate),
+    singleRate: sRate,
+    doubleRate: dRate,
+    rate: sRate,
     type: tile.dataset.type,
     size: tile.dataset.size,
     qty: 1, pages: 1, sides: 'Single'
@@ -194,11 +210,12 @@ document.getElementById('tileGrid').addEventListener('click', e => {
 const addCustomBtn = document.getElementById('addCustomItemBtn');
 if (addCustomBtn) {
   addCustomBtn.addEventListener('click', () => {
-    activeTile = null;
     editingIdx = null;
     openModal({
       id: 'custom',
       name: '',
+      singleRate: 0,
+      doubleRate: 0,
       rate: 0,
       type: 'service',
       size: '-',
@@ -209,6 +226,7 @@ if (addCustomBtn) {
 
 /* ─────────── Modal open/close ─────────── */
 function openModal(item) {
+  currentItemConfig = { ...item };
   const isCustom = item.id === 'custom' || !item.id;
   const mCategory = document.getElementById('mCategory');
   const mBadge = document.getElementById('mBadge');
@@ -225,9 +243,11 @@ function openModal(item) {
   document.getElementById('mName').value = item.name || '';
   document.getElementById('mQty').value = item.qty || 1;
   document.getElementById('mPages').value = item.pages || 1;
-  document.getElementById('mRate').value = item.rate !== undefined ? item.rate : 0;
+  
   setSides(item.sides || 'Single');
+  updateRateForSides(item.sides || 'Single');
   updateModalAmount();
+
   document.getElementById('itemModal').classList.add('open');
   document.getElementById('modalBackdrop').classList.add('open');
   document.getElementById('modalAdd').textContent = editingIdx !== null ? 'Update' : 'Add to Bill';
@@ -238,6 +258,7 @@ function closeModal() {
   document.getElementById('itemModal').classList.remove('open');
   document.getElementById('modalBackdrop').classList.remove('open');
   editingIdx = null;
+  currentItemConfig = null;
 }
 
 document.getElementById('modalClose').addEventListener('click', closeModal);
@@ -250,10 +271,23 @@ function setSides(val) {
     b.classList.toggle('active', b.dataset.val === val);
   });
 }
+
+function updateRateForSides(sidesVal) {
+  if (!currentItemConfig) return;
+  const isDouble = sidesVal.toLowerCase().includes('double');
+  if (isDouble && currentItemConfig.doubleRate) {
+    document.getElementById('mRate').value = currentItemConfig.doubleRate;
+  } else if (currentItemConfig.singleRate !== undefined) {
+    document.getElementById('mRate').value = currentItemConfig.singleRate;
+  }
+}
+
 document.getElementById('sidesCtrl').addEventListener('click', e => {
   const btn = e.target.closest('.seg-btn');
   if (!btn) return;
-  setSides(btn.dataset.val);
+  const sidesVal = btn.dataset.val;
+  setSides(sidesVal);
+  updateRateForSides(sidesVal);
   updateModalAmount();
 });
 
@@ -274,26 +308,40 @@ function updateModalAmount() {
   const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
   const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
   const rate = parseFloat(document.getElementById('mRate').value) || 0;
+  const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
+  const isDouble = sides.toLowerCase().includes('double');
+
+  // Physical sheets calculation
+  let sheets = 0;
+  if (isDouble) {
+    sheets = qty * Math.ceil(pages / 2);
+  } else {
+    sheets = qty * pages;
+  }
+  document.getElementById('mSheets').textContent = sheets + ' sheet' + (sheets === 1 ? '' : 's');
+
   const total = qty * pages * rate;
   document.getElementById('mAmount').textContent = fmt(total);
 }
 
 /* ─────────── Add / Update cart ─────────── */
 document.getElementById('modalAdd').addEventListener('click', () => {
-  const name  = document.getElementById('mName').value.trim() || (activeTile ? activeTile.dataset.name : 'Custom Item');
+  const name  = document.getElementById('mName').value.trim() || 'Item';
   const qty   = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
   const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
   const rate  = parseFloat(document.getElementById('mRate').value) || 0;
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
-  const type  = activeTile ? activeTile.dataset.type : (document.getElementById('mCategory').value || 'service');
-  const size  = activeTile ? activeTile.dataset.size : '-';
-  const id    = activeTile ? activeTile.dataset.id : 'custom';
+  const type  = currentItemConfig ? currentItemConfig.type : (document.getElementById('mCategory').value || 'service');
+  const size  = currentItemConfig ? currentItemConfig.size : '-';
+  const id    = currentItemConfig ? currentItemConfig.id : 'custom';
+  const singleRate = currentItemConfig ? currentItemConfig.singleRate : rate;
+  const doubleRate = currentItemConfig ? currentItemConfig.doubleRate : rate;
   const lineTotal = qty * pages * rate;
 
   if (editingIdx !== null) {
-    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, pages, rate, sides, lineTotal };
+    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal };
   } else {
-    cart.push({ id, name, type, size, qty, pages, rate, sides, lineTotal });
+    cart.push({ id, name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal });
   }
   closeModal();
   renderCart();
@@ -337,7 +385,6 @@ function renderCart() {
     row.addEventListener('click', () => {
       editingIdx = parseInt(row.dataset.idx);
       const item = cart[editingIdx];
-      activeTile = item.id !== 'custom' ? document.querySelector(`.tile[data-id="${item.id}"]`) : null;
       openModal(item);
     });
   });
@@ -367,13 +414,10 @@ document.getElementById('submitBillBtn').addEventListener('click', () => {
   cart.forEach(item => {
     const h = (n,v) => { const i=document.createElement('input'); i.type='hidden'; i.name=n; i.value=v; fItems.appendChild(i); };
     h('item_service[]', item.id);
-    h('item_name[]',    item.name);
     h('item_qty[]',     item.qty);
     h('item_pages[]',   item.pages);
     h('item_sides[]',   item.sides);
     h('item_rate[]',    item.rate);
-    h('item_type[]',    item.type);
-    h('item_size[]',    item.size);
   });
   document.getElementById('fCustomer').value = document.getElementById('pmCustomer').value;
   document.getElementById('fPayment').value  = document.getElementById('pmMethod').value;

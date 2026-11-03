@@ -3,9 +3,9 @@
 {% block content %}
 <div class="pagehead">
   <div>
-    <p class="eyebrow">SETUP</p>
+    <p class="eyebrow">SETUP &amp; CATALOG</p>
     <h1>Price list &amp; Items</h1>
-    <p class="muted">Add new items, edit names and prices, or remove items from the billing catalog.</p>
+    <p class="muted">Manage billing services, single/double sided pricing, paper cost mappings, and active statuses.</p>
   </div>
 </div>
 
@@ -18,8 +18,12 @@
       <input name="name" required placeholder="e.g. Spiral Binding A4">
     </label>
     <label>
-      Rate per unit / page (₹)
+      Single-Side Rate (₹)
       <input type="number" min="0" step="0.01" name="rate" required placeholder="0.00">
+    </label>
+    <label>
+      Double-Side Rate (₹)
+      <input type="number" min="0" step="0.01" name="double_rate" placeholder="Optional if single only">
     </label>
     <label>
       Category
@@ -35,6 +39,15 @@
       <input name="paper_size" value="A4" required placeholder="e.g. A4, Legal, -">
     </label>
     <label>
+      Link Inventory Paper Stock
+      <select name="paper_id">
+        <option value="">None / Service Only</option>
+        {% for p in papers %}
+          <option value="{{ p.id }}">{{ p.item_name }} ({{ p.size_spec }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
       Sheets per unit
       <input name="sheets_per_unit" type="number" min="0" value="1">
     </label>
@@ -48,7 +61,7 @@
   <form method="post">
     <input type="hidden" name="action" value="update">
     <div class="section-title">
-      <h2>Current Items ({{ services|length }})</h2>
+      <h2>Current Active Items ({{ services|length }})</h2>
       <button class="btn primary" type="submit">Save all changes</button>
     </div>
     <div class="tablewrap">
@@ -58,7 +71,9 @@
             <th>Item Name</th>
             <th>Category</th>
             <th>Size</th>
-            <th>Rate (₹)</th>
+            <th>Single Rate (₹)</th>
+            <th>Double Rate (₹)</th>
+            <th>Linked Paper (Stock &amp; Cost)</th>
             <th>Status</th>
             <th>Actions</th>
           </tr>
@@ -82,7 +97,18 @@
               <input class="size-edit" name="service_size[]" value="{{ s.paper_size }}" required>
             </td>
             <td>
-              <input class="rate-edit" name="service_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.rate) }}" required>
+              <input class="rate-edit" name="service_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.rate) }}" required title="Single side rate">
+            </td>
+            <td>
+              <input class="rate-edit" name="service_double_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.double_rate) if s.double_rate else '' }}" placeholder="None" title="Double side rate">
+            </td>
+            <td>
+              <select name="service_paper_id[]" style="min-width: 160px; font-size: 11px;">
+                <option value="">None / Service</option>
+                {% for p in papers %}
+                  <option value="{{ p.id }}" {% if s.paper_id == p.id %}selected{% endif %}>{{ p.item_name }}</option>
+                {% endfor %}
+              </select>
             </td>
             <td>
               <span class="status-badge {% if s.active %}status-active{% else %}status-disabled{% endif %}">

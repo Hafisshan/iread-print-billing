@@ -1,17 +1,181 @@
 {% extends "base.html" %}
-{% block title %}Daily Reports | Iread{% endblock %}
+{% block title %}Daily Reports & Financials | Iread{% endblock %}
 {% block content %}
-<div class="pagehead"><div><p class="eyebrow">SHOP PERFORMANCE</p><h1>Daily report</h1><p class="muted">Sales, payment collection and estimated paper usage.</p></div></div>
-<form class="searchbar" method="get"><label>Report date <input type="date" name="date" value="{{ selected_date }}"></label><button class="btn primary">View report</button></form>
-<div class="reportcards">
-<div class="metric"><span>Bills</span><strong>{{ summary.bills }}</strong></div>
-<div class="metric"><span>Sales after discount</span><strong>{{ summary.total|inr }}</strong></div>
-<div class="metric"><span>Amount received</span><strong>{{ summary.paid|inr }}</strong></div>
-<div class="metric"><span>Balance due</span><strong>{{ summary.balance|inr }}</strong></div>
+<div class="pagehead">
+  <div>
+    <p class="eyebrow">FINANCIAL PERFORMANCE</p>
+    <h1>Shop Reports &amp; Analytics</h1>
+    <p class="muted">Track daily sales, paper costs, operating expenses, and net profit.</p>
+  </div>
+  {% if is_admin %}
+  <div class="stats">
+    <div><span>Gross Profit</span><strong style="color: var(--green);">{{ summary.profit|inr }}</strong></div>
+    <div><span>Maintenance</span><strong style="color: #9a214b;">{{ maintenance_total|inr }}</strong></div>
+    <div><span>Net Profit</span><strong style="color: var(--accent); font-size: 22px;">{{ net_profit|inr }}</strong></div>
+  </div>
+  {% endif %}
 </div>
+
+<!-- ── Date Filter & Quick Range ── -->
+<div class="panel" style="padding: 16px 20px; margin-bottom: 20px;">
+  <form class="searchbar" method="get" style="margin-bottom: 0; align-items: flex-end;">
+    <label>
+      Select Date
+      <input type="date" name="date" value="{{ selected_date }}">
+    </label>
+    <button class="btn primary">View Day Report</button>
+  </form>
+</div>
+
+<!-- ── Main Financial Metric Cards (Admin sees Profit & Costs) ── -->
+<div class="reportcards" style="{% if not is_admin %}grid-template-columns: repeat(4, 1fr);{% else %}grid-template-columns: repeat(4, 1fr);{% endif %}">
+  <div class="metric">
+    <span>Bills Generated</span>
+    <strong>{{ summary.bills }}</strong>
+  </div>
+  <div class="metric">
+    <span>Total Sales (Gross)</span>
+    <strong>{{ summary.total|inr }}</strong>
+  </div>
+  <div class="metric">
+    <span>Amount Collected</span>
+    <strong style="color: var(--green);">{{ summary.paid|inr }}</strong>
+  </div>
+  <div class="metric">
+    <span>Balance Due</span>
+    <strong style="color: #b84a00;">{{ summary.balance|inr }}</strong>
+  </div>
+
+  {% if is_admin %}
+  <div class="metric" style="border-top: 3px solid #780431;">
+    <span>Total Paper Cost</span>
+    <strong style="color: #77717e;">{{ summary.paper_cost|inr }}</strong>
+  </div>
+  <div class="metric" style="border-top: 3px solid var(--green);">
+    <span>Billing Gross Profit</span>
+    <strong style="color: var(--green);">{{ summary.profit|inr }}</strong>
+  </div>
+  <div class="metric" style="border-top: 3px solid #9a214b;">
+    <span>Maintenance Expenses</span>
+    <strong style="color: #9a214b;">{{ maintenance_total|inr }}</strong>
+  </div>
+  <div class="metric" style="border-top: 3px solid var(--accent); background: #fdf6f8;">
+    <span>Net Profit (Today)</span>
+    <strong style="color: var(--accent); font-size: 22px;">{{ net_profit|inr }}</strong>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Usage & Expenses Row ── -->
 <div class="reportgrid">
-<section class="panel"><h2>Estimated print usage</h2><div class="usage"><div><span>Physical paper sheets</span><strong>{{ usage.sheets }}</strong></div><div><span>B&W page units</span><strong>{{ usage.bw_units }}</strong></div><div><span>Color/photo page units</span><strong>{{ usage.color_units }}</strong></div></div><p class="hint">Usage is estimated from bill entries, not measured from the printer. Duplex jobs count fewer sheets. Confirm this estimate against actual printer settings.</p></section>
-<section class="panel"><h2>Payment methods</h2><table><thead><tr><th>Method</th><th>Bills</th><th>Total</th><th>Received</th></tr></thead><tbody>{% for p in payment_rows %}<tr><td>{{ p.payment_method }}</td><td>{{ p.count }}</td><td>{{ p.amount|inr }}</td><td>{{ p.paid|inr }}</td></tr>{% else %}<tr><td colspan="4" class="muted">No sales for this date.</td></tr>{% endfor %}</tbody></table></section>
+  <!-- Print Paper Usage -->
+  <section class="panel">
+    <h2>Estimated Physical Paper & Print Usage</h2>
+    <div class="usage">
+      <div><span>Physical Paper Sheets Used</span><strong style="color: var(--accent);">{{ usage.sheets }} sheets</strong></div>
+      <div><span>B&amp;W Page Units</span><strong>{{ usage.bw_units }}</strong></div>
+      <div><span>Colour / Photo Units</span><strong>{{ usage.color_units }}</strong></div>
+      {% if is_admin %}
+      <div><span>Estimated Paper Cost</span><strong>{{ usage.paper_cost|inr }}</strong></div>
+      {% endif %}
+    </div>
+    <p class="hint">Physical sheets are deducted accurately: duplex jobs consume 1 physical sheet per 2 printed sides.</p>
+  </section>
+
+  <!-- Payment Methods & Maintenance -->
+  <section class="panel">
+    <h2>Payment Methods Breakdown</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Bills</th>
+          <th>Total</th>
+          <th>Received</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in payment_rows %}
+        <tr>
+          <td><strong>{{ p.payment_method }}</strong></td>
+          <td>{{ p.count }}</td>
+          <td>{{ p.amount|inr }}</td>
+          <td style="color: var(--green); font-weight: 600;">{{ p.paid|inr }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">No transactions on this date.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if is_admin and maintenance_rows %}
+    <h3 style="margin: 20px 0 10px; font-size: 14px;">Daily Maintenance Expenses</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Description</th>
+          <th style="text-align: right;">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in maintenance_rows %}
+        <tr>
+          <td><span class="tile-badge service">{{ m.category }}</span></td>
+          <td>{{ m.title }}</td>
+          <td style="text-align: right; color: #9a214b; font-weight: 700;">{{ m.amount|inr }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
 </div>
-<section class="panel"><h2>Service breakdown</h2><table><thead><tr><th>Service</th><th>Units (copies × pages)</th><th>Sales</th></tr></thead><tbody>{% for item in top_items %}<tr><td>{{ item.service_name }}</td><td>{{ item.units }}</td><td>{{ item.amount|inr }}</td></tr>{% else %}<tr><td colspan="3" class="muted">No sales for this date.</td></tr>{% endfor %}</tbody></table></section>
+
+<!-- ── Service Performance Breakdown (Admin sees Profit per service) ── -->
+<section class="panel">
+  <h2>Service Performance &amp; Profit Breakdown</h2>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Service Name</th>
+          <th>Category</th>
+          <th>Units Billed</th>
+          <th>Sheets Consumed</th>
+          <th>Total Sales</th>
+          {% if is_admin %}
+          <th>Paper Cost</th>
+          <th>Gross Profit</th>
+          <th>Margin</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in top_items %}
+        <tr>
+          <td><strong>{{ item.service_name }}</strong></td>
+          <td><span class="tile-badge {{ item.print_type }}">{{ item.print_type|upper }}</span></td>
+          <td>{{ item.units }}</td>
+          <td>{{ item.sheets }} sheets</td>
+          <td style="font-weight: 700;">{{ item.amount|inr }}</td>
+          {% if is_admin %}
+          <td style="color: var(--muted);">{{ item.paper_cost|inr }}</td>
+          <td style="color: var(--green); font-weight: 700;">{{ item.profit|inr }}</td>
+          <td>
+            {% if item.amount > 0 %}
+              {{ '%.1f'|format((item.profit / item.amount) * 100) }}%
+            {% else %}
+              0%
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr><td colspan="{% if is_admin %}8{% else %}5{% endif %}" class="muted" style="text-align:center; padding:24px;">No services billed for this date.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endblock %}

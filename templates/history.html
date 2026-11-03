@@ -1,9 +1,63 @@
 {% extends "base.html" %}
 {% block title %}Bill History | Iread{% endblock %}
 {% block content %}
-<div class="pagehead"><div><p class="eyebrow">TRANSACTIONS</p><h1>Bill history</h1><p class="muted">Latest 200 bills. Search by bill number or customer name.</p></div><a class="btn secondary" href="{{ url_for('export_csv') }}">Export CSV</a></div>
-<form class="searchbar" method="get"><input name="q" value="{{ q }}" placeholder="Search bill number or customer"><button class="btn primary">Search</button>{% if q %}<a href="{{ url_for('history') }}">Clear</a>{% endif %}</form>
-<section class="panel tablewrap"><table><thead><tr><th>Bill no.</th><th>Date/time</th><th>Customer</th><th>Payment</th><th>Total</th><th>Paid</th><th>Balance</th><th></th></tr></thead><tbody>
-{% for b in bills %}<tr><td><strong>{{ b.bill_no }}</strong></td><td>{{ b.created_at.replace('T',' ') }}</td><td>{{ b.customer or 'Walk-in' }}</td><td>{{ b.payment_method }}</td><td>{{ b.total|inr }}</td><td>{{ b.paid|inr }}</td><td>{{ b.balance|inr }}</td><td><a href="{{ url_for('receipt', bill_id=b.id) }}">Receipt</a></td></tr>{% else %}<tr><td colspan="8" class="muted">No bills found.</td></tr>{% endfor %}
-</tbody></table></section>
+<div class="pagehead">
+  <div>
+    <p class="eyebrow">TRANSACTIONS</p>
+    <h1>Bill history</h1>
+    <p class="muted">Latest 200 bills. Search by bill number or customer name.</p>
+  </div>
+  {% if is_admin %}
+  <a class="btn secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
+  {% endif %}
+</div>
+
+<form class="searchbar" method="get">
+  <input name="q" value="{{ q }}" placeholder="Search bill number or customer">
+  <button class="btn primary">Search</button>
+  {% if q %}<a href="{{ url_for('history') }}" style="margin-left: 8px;">Clear</a>{% endif %}
+</form>
+
+<section class="panel tablewrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Bill no.</th>
+        <th>Date/time</th>
+        <th>Customer</th>
+        <th>Payment</th>
+        <th>Total</th>
+        <th>Paid</th>
+        <th>Balance</th>
+        {% if is_admin %}
+        <th>Paper Cost</th>
+        <th>Gross Profit</th>
+        {% endif %}
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in bills %}
+      <tr>
+        <td><strong>{{ b.bill_no }}</strong></td>
+        <td>{{ b.created_at[:19].replace('T',' ') }}</td>
+        <td>{{ b.customer or 'Walk-in' }}</td>
+        <td>{{ b.payment_method }}</td>
+        <td><strong>{{ b.total|inr }}</strong></td>
+        <td style="color: var(--green);">{{ b.paid|inr }}</td>
+        <td style="color: {% if b.balance > 0 %}#b84a00{% else %}var(--muted){% endif %};">
+          {{ b.balance|inr }}
+        </td>
+        {% if is_admin %}
+        <td style="color: var(--muted);">{{ b.paper_cost|inr }}</td>
+        <td style="color: var(--green); font-weight: 700;">{{ b.profit|inr }}</td>
+        {% endif %}
+        <td><a href="{{ url_for('receipt', bill_id=b.id) }}" class="btn tiny secondary">Receipt</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="{% if is_admin %}10{% else %}8{% endif %}" class="muted" style="text-align: center; padding: 24px;">No bills found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
 {% endblock %}
