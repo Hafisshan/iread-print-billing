@@ -90,10 +90,23 @@
           <input id="cPaid" class="cart-input-num" type="number" min="0" step="0.01" placeholder="Full">
         </div>
       </div>
-      <button class="pos-submit-btn" id="submitBillBtn" disabled>Save &amp; Print Receipt</button>
+      <div class="billing-actions" style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px;">
+        <button class="pos-submit-btn" id="saveAndPrintBtn" type="button" disabled style="padding: 13px 8px; font-size: 13px;">
+          🖨 Save &amp; Print
+        </button>
+        <button class="pos-btn secondary" id="saveOnlyBtn" type="button" disabled style="padding: 13px 8px; font-size: 13px; font-weight: 700; border-radius: 12px;">
+          💾 Save Only
+        </button>
+      </div>
     </div>
   </div>
 </div>
+
+<!-- Hidden Background Thermal Print iFrame -->
+<iframe id="silentReceiptFrame" style="position:fixed; top:-9999px; left:-9999px; width:1px; height:1px; visibility:hidden;"></iframe>
+
+<!-- Toast status notification -->
+<div id="posToast" style="display:none; position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#25212a; color:#fff; padding:12px 22px; border-radius:12px; z-index:999; font-weight:600; box-shadow:0 8px 30px #00000030;"></div>
 
 <!-- ── HIDDEN FORM (submitted programmatically) ── -->
 <form method="post" action="{{ url_for('create_bill') }}" id="billForm" style="display:none">
@@ -354,7 +367,8 @@ function renderCart() {
   if (cart.length === 0) {
     el.innerHTML = '';
     el.appendChild(empty);
-    document.getElementById('submitBillBtn').disabled = true;
+    document.getElementById('saveAndPrintBtn').disabled = true;
+    document.getElementById('saveOnlyBtn').disabled = true;
     recalc();
     return;
   }
@@ -377,7 +391,8 @@ function renderCart() {
       </div>`;
     el.appendChild(div);
   });
-  document.getElementById('submitBillBtn').disabled = false;
+  document.getElementById('saveAndPrintBtn').disabled = false;
+  document.getElementById('saveOnlyBtn').disabled = false;
   recalc();
 
   // Edit on tap
@@ -407,25 +422,92 @@ function recalc() {
 }
 document.getElementById('cDiscount').addEventListener('input', recalc);
 
-/* ─────────── Submit ─────────── */
-document.getElementById('submitBillBtn').addEventListener('click', () => {
-  const fItems = document.getElementById('fItems');
-  fItems.innerHTML = '';
-  cart.forEach(item => {
-    const h = (n,v) => { const i=document.createElement('input'); i.type='hidden'; i.name=n; i.value=v; fItems.appendChild(i); };
-    h('item_service[]', item.id);
-    h('item_qty[]',     item.qty);
-    h('item_pages[]',   item.pages);
-    h('item_sides[]',   item.sides);
-    h('item_rate[]',    item.rate);
-  });
-  document.getElementById('fCustomer').value = document.getElementById('pmCustomer').value;
-  document.getElementById('fPayment').value  = document.getElementById('pmMethod').value;
-  document.getElementById('fDiscount').value = document.getElementById('cDiscount').value || 0;
-  const paid = document.getElementById('cPaid').value;
-  document.getElementById('fPaid').value = paid || '';
-  document.getElementById('billForm').submit();
-});
+/* ─────────── Submit Actions (Optimised Async & 0-Delay Print) ─────────── */
+let isSubmitting = false;
+
+function showToast(msg, isError) {
+  const t = document.getElementById('posToast');
+  t.textContent = msg;
+  t.style.background = isError ? '#9a214b' : '#16784b';
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 3000);
+}
+
+async function handleBillingAction(shouldPrint) {
+  if (isSubmitting) return;
+  if (cart.length === 0) return;
+
+  isSubmitting = true;
+  const printBtn = document.getElementById('saveAndPrintBtn');
+  const saveBtn = document.getElementById('saveOnlyBtn');
+  printBtn.disabled = true;
+  saveBtn.disabled = true;
+  printBtn.textContent = shouldPrint ? 'Printing…' : 'Saving…';
+
+  const payload = {
+    customer: document.getElementById('pmCustomer').value.trim(),
+    payment_method: document.getElementById('pmMethod').value,
+    discount: parseFloat(document.getElementById('cDiscount').value) || 0,
+    paid: document.getElementById('cPaid').value.trim(),
+    notes: '',
+    items: cart.map(i => ({
+      service_id: i.id,
+      name: i.name,
+      qty: i.qty,
+      pages: i.pages,
+      sides: i.sides,
+      rate: i.rate
+    }))
+  };
+
+  try {
+    const res = await fetch('{{ url_for("create_bill_api") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to save bill');
+    }
+
+    // 1. If print requested, trigger lightweight background iframe print immediately
+    if (shouldPrint && data.receipt_url) {
+      const frame = document.getElementById('silentReceiptFrame');
+      frame.src = data.receipt_url + '?auto=1';
+      showToast(`✓ Bill ${data.bill_no} saved & sent to printer!`);
+    } else {
+      showToast(`✓ Bill ${data.bill_no} saved successfully!`);
+    }
+
+    // 2. Immediately reset billing screen for the next customer (0-second wait)
+    resetBillingScreen();
+
+  } catch (err) {
+    console.error(err);
+    showToast(`Error: ${err.message}`, true);
+    printBtn.disabled = false;
+    saveBtn.disabled = false;
+  } finally {
+    isSubmitting = false;
+    printBtn.textContent = '🖨 Save & Print';
+  }
+}
+
+function resetBillingScreen() {
+  cart = [];
+  editingIdx = null;
+  currentItemConfig = null;
+  document.getElementById('pmCustomer').value = '';
+  document.getElementById('cDiscount').value = '0';
+  document.getElementById('cPaid').value = '';
+  renderCart();
+  document.getElementById('pmCustomer').focus();
+}
+
+document.getElementById('saveAndPrintBtn').addEventListener('click', () => handleBillingAction(true));
+document.getElementById('saveOnlyBtn').addEventListener('click', () => handleBillingAction(false));
 
 /* ─────────── Helpers ─────────── */
 function fmt(n) {

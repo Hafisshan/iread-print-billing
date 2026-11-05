@@ -1,17 +1,76 @@
 {% extends "base.html" %}
 {% block title %}Receipt {{ bill.bill_no }} | Iread{% endblock %}
 {% block content %}
-<div class="receipt-actions no-print"><a class="btn secondary" href="{{ url_for('index') }}">+ New bill</a><button class="btn primary" onclick="window.print()">Print receipt</button><a class="btn secondary" href="{{ url_for('history') }}">Bill history</a></div>
-<div class="receipt">
-<div class="receipt-brand"><strong>Iread</strong><span>Photostat & Color Printing</span></div>
-<div class="center small">BILL / PAYMENT RECEIPT</div>
-<div class="receipt-meta"><div><span>Bill No.</span><strong>{{ bill.bill_no }}</strong></div><div><span>Date</span><strong>{{ bill.created_at.replace('T',' ') }}</strong></div></div>
-{% if bill.customer %}<p class="small">Customer: {{ bill.customer }}</p>{% endif %}
-<table class="receipt-table"><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th class="right">Amount</th></tr></thead><tbody>
-{% for item in items %}<tr><td>{{ item.service_name }}<div class="tiny">{{ item.pages_per_copy }} page(s)/copy · {{ item.sides }}</div></td><td>{{ item.quantity }}</td><td>{{ item.rate|inr }}</td><td class="right">{{ item.line_total|inr }}</td></tr>{% endfor %}
-</tbody></table>
-<div class="receipt-totals"><div><span>Subtotal</span><strong>{{ bill.subtotal|inr }}</strong></div><div><span>Discount</span><strong>{{ bill.discount|inr }}</strong></div><div class="grand"><span>Total</span><strong>{{ bill.total|inr }}</strong></div><div><span>Paid ({{ bill.payment_method }})</span><strong>{{ bill.paid|inr }}</strong></div><div><span>Balance due</span><strong>{{ bill.balance|inr }}</strong></div></div>
-{% if bill.notes %}<p class="small">Notes: {{ bill.notes }}</p>{% endif %}
-<p class="center small thanks">Thank you! Visit again.</p>
+<div class="receipt-actions no-print">
+  <a class="btn secondary" href="{{ url_for('index') }}">+ New bill</a>
+  <button class="btn primary" onclick="window.print()">🖨 Print receipt</button>
+  <a class="btn secondary" href="{{ url_for('history') }}">Bill history</a>
 </div>
+
+<div class="receipt">
+  <div class="receipt-brand">
+    <strong>Iread</strong>
+    <span>Photostat &amp; Color Printing</span>
+  </div>
+  <div class="center small" style="letter-spacing:1px; margin: 4px 0 8px;">BILL / PAYMENT RECEIPT</div>
+  <div class="receipt-meta">
+    <div><span>Bill No.</span><strong>{{ bill.bill_no }}</strong></div>
+    <div><span>Date</span><strong>{{ bill.created_at[:19].replace('T',' ') }}</strong></div>
+  </div>
+
+  {% if bill.customer %}
+    <p class="small" style="margin: 4px 0 8px;">Customer: <strong>{{ bill.customer }}</strong></p>
+  {% endif %}
+
+  <table class="receipt-table">
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th style="text-align:center;">Qty</th>
+        <th style="text-align:right;">Rate</th>
+        <th class="right">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td>
+          {{ item.service_name }}
+          <div class="tiny">{{ item.pages_per_copy }}p/copy · {{ item.sides }}</div>
+        </td>
+        <td style="text-align:center;">{{ item.quantity }}</td>
+        <td style="text-align:right;">{{ item.rate|inr }}</td>
+        <td class="right">{{ item.line_total|inr }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="receipt-totals">
+    <div><span>Subtotal</span><strong>{{ bill.subtotal|inr }}</strong></div>
+    {% if bill.discount and bill.discount > 0 %}
+    <div><span>Discount</span><strong>-{{ bill.discount|inr }}</strong></div>
+    {% endif %}
+    <div class="grand"><span>Total</span><strong>{{ bill.total|inr }}</strong></div>
+    <div><span>Paid ({{ bill.payment_method }})</span><strong>{{ bill.paid|inr }}</strong></div>
+    {% if bill.balance and bill.balance > 0 %}
+    <div><span>Balance due</span><strong style="color:#b84a00;">{{ bill.balance|inr }}</strong></div>
+    {% endif %}
+  </div>
+
+  {% if bill.notes %}
+    <p class="small" style="margin-top:8px;">Notes: {{ bill.notes }}</p>
+  {% endif %}
+  <p class="center small thanks">Thank you! Visit again.</p>
+</div>
+
+{% if auto_print %}
+<script>
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    window.print();
+  }, 100);
+});
+</script>
+{% endif %}
 {% endblock %}

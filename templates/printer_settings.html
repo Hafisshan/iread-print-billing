@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Printer Settings & Thermal Print | Iread{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <p class="eyebrow">DEVICE CONFIGURATION</p>
+    <h1>Printer Settings</h1>
+    <p class="muted">Configure default thermal printer (80mm/72mm/58mm), test printing, and auto-print options.</p>
+  </div>
+</div>
+
+<div class="reportgrid">
+  <!-- ── Current Default Printer Card ── -->
+  <section class="panel">
+    <h2>Current Configured Printer</h2>
+    <div style="padding: 16px; background: #faf9fb; border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 18px;">
+      <div style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; letter-spacing: 0.5px;">Active Printer</div>
+      <div style="font-size: 20px; font-weight: 800; color: var(--accent); margin-top: 4px;" id="currentPrinterDisplay">
+        {{ current_printer or 'System Default / Browser Dialog' }}
+      </div>
+      <div style="font-size: 12px; color: var(--muted); margin-top: 6px;">
+        Paper Size: <strong>{{ thermal_width or '80mm' }}</strong>
+      </div>
+    </div>
+
+    <form method="post" class="formgrid" style="grid-template-columns: 1fr;">
+      <input type="hidden" name="action" value="save_printer">
+
+      <label>
+        Select Printer
+        <select name="printer_name" id="printerSelect">
+          <option value="__SYSTEM_DEFAULT__" {% if current_printer == '__SYSTEM_DEFAULT__' or not current_printer %}selected{% endif %}>
+            ★ System Default Thermal Printer
+          </option>
+          {% for p in available_printers %}
+            <option value="{{ p }}" {% if current_printer == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>
+        Thermal Paper Width
+        <select name="thermal_width">
+          <option value="80mm" {% if thermal_width == '80mm' %}selected{% endif %}>80mm (Standard POS Receipt - 72mm printable)</option>
+          <option value="58mm" {% if thermal_width == '58mm' %}selected{% endif %}>58mm (Compact Mobile POS Receipt)</option>
+        </select>
+      </label>
+
+      <div style="display: flex; gap: 10px; margin-top: 10px;">
+        <button class="btn primary" type="submit">Save Default Printer</button>
+        <button class="btn secondary" type="button" onclick="testThermalPrint()">Test Print (Slip)</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- ── How Silent / Fast Printing Works ── -->
+  <section class="panel">
+    <h2>Fast Printing Instructions</h2>
+    <div style="font-size: 13px; line-height: 1.7; color: var(--ink);">
+      <p><strong>1. Seamless POS Printing:</strong></p>
+      <p style="color: var(--muted);">
+        When you click <strong>"Save &amp; Print Bill"</strong> on the billing screen, the app immediately saves the bill and invokes the print action in an invisible background frame.
+      </p>
+
+      <p style="margin-top: 14px;"><strong>2. Zero-Dialog / 1-Click Printing in Chrome / Edge (Kiosk Mode):</strong></p>
+      <p style="color: var(--muted);">
+        To make Google Chrome or Edge print straight to your thermal printer with <strong>zero dialogs</strong> (instant 0-second print):
+      </p>
+      <div style="background: #25212a; color: #f8eaf0; padding: 12px 14px; border-radius: 8px; font-family: monospace; font-size: 12px; margin: 8px 0;">
+        --kiosk-printing
+      </div>
+      <p style="color: var(--muted); font-size: 12px;">
+        Add <code>--kiosk-printing</code> to your Chrome shortcut target or launch Chrome with kiosk printing enabled. The browser will automatically send receipts directly to your default thermal printer without asking.
+      </p>
+
+      <p style="margin-top: 14px;"><strong>3. Save Only Option:</strong></p>
+      <p style="color: var(--muted);">
+        Click <strong>"Save Only"</strong> whenever a customer does not need a paper receipt. The bill will be saved to database and the POS screen resets instantly.
+      </p>
+    </div>
+  </section>
+</div>
+
+<!-- Hidden test print frame -->
+<iframe id="testPrintFrame" style="position:fixed; top:-9999px; left:-9999px; width:1px; height:1px;"></iframe>
+
+<script>
+function testThermalPrint() {
+  const frame = document.getElementById('testPrintFrame');
+  const now = new Date().toLocaleString();
+  const width = document.querySelector('select[name="thermal_width"]').value || '80mm';
+  const widthMm = width === '58mm' ? '48mm' : '72mm';
+
+  const html = `
+  <!doctype html>
+  <html>
+  <head>
+  <style>
+    @page { size: ${width} auto; margin: 2mm; }
+    body { font-family: -apple-system, monospace, sans-serif; margin: 0; padding: 4px; font-size: 12px; color: #000; width: ${widthMm}; }
+    .center { text-align: center; }
+    .bold { font-weight: bold; }
+    .line { border-bottom: 1px dashed #000; margin: 6px 0; }
+  </style>
+  </head>
+  <body>
+    <div class="center bold" style="font-size:16px;">IREAD BILLING</div>
+    <div class="center" style="font-size:10px;">TEST THERMAL PRINT</div>
+    <div class="line"></div>
+    <div>Printer: <strong>${document.getElementById('printerSelect').value}</strong></div>
+    <div>Paper: <strong>${width}</strong></div>
+    <div>Date: ${now}</div>
+    <div class="line"></div>
+    <div class="center">✓ Printer Connected Successfully</div>
+    <div class="center" style="font-size:10px; margin-top:8px;">End of test slip</div>
+  </body>
+  </html>`;
+
+  frame.contentDocument.open();
+  frame.contentDocument.write(html);
+  frame.contentDocument.close();
+
+  setTimeout(() => {
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  }, 250);
+}
+</script>
+{% endblock %}

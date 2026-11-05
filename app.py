@@ -617,6 +617,7 @@ def create_bill():
 
 @app.route("/receipt/<int:bill_id>")
 def receipt(bill_id):
+    auto_print = (request.args.get("auto") == "1")
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM bills WHERE id=%s", (bill_id,))
@@ -625,7 +626,232 @@ def receipt(bill_id):
             items = cur.fetchall()
     if not bill:
         return "Bill not found", 404
-    return render_template("receipt.html", bill=bill, items=items)
+    return render_template("receipt.html", bill=bill, items=items, auto_print=auto_print)
+
+# ── API: High-Speed Billing Endpoint (Instant Save & Print) ──
+@app.post("/api/create-bill")
+def create_bill_api():
+    try:
+        data = request.get_json(force=True) or {}
+        customer = (data.get("customer") or "").strip()
+        payment = data.get("payment_method") or "Cash"
+        discount = money(data.get("discount", 0))
+        paid_input = str(data.get("paid", "")).strip()
+        notes = (data.get("notes") or "").strip()
+        raw_items = data.get("items") or []
+
+        if not raw_items:
+            return {"success": False, "error": "Cart is empty."}, 400
+
+        items = []
+        subtotal = 0.0
+        total_bill_paper_cost = 0.0
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                # Pre-fetch inventory cost lookup
+                cur.execute("""
+                SELECT id, item_name, size_spec, available_sheets, 
+                       ROUND((cost / NULLIF(total_sheets,0))::numeric, 4) AS cost_per_sheet
+                FROM inventory
+                """)
+                inv_rows = cur.fetchall()
+                inv_map = {r['id']: float(r['cost_per_sheet'] or 0.0) for r in inv_rows}
+                inv_by_size = {}
+                for r in inv_rows:
+                    key = (r['size_spec'] or '').strip().upper()
+                    if key and key not in inv_by_size:
+                        inv_by_size[key] = (r['id'], float(r['cost_per_sheet'] or 0.0))
+
+                for it in raw_items:
+                    s_id = str(it.get("service_id", "")).strip()
+                    try:
+                        qty = max(1, int(it.get("qty", 1)))
+                        pages_per_copy = max(1, int(it.get("pages", 1)))
+                        rate = money(it.get("rate", 0))
+                    except (ValueError, TypeError):
+                        continue
+
+                    sides = it.get("sides") or "Single"
+                    is_double = sides.lower().startswith("double")
+
+                    service = None
+                    if s_id and s_id != 'custom':
+                        try:
+                            cur.execute("SELECT * FROM services WHERE id=%s", (int(s_id),))
+                            service = cur.fetchone()
+                        except (ValueError, TypeError):
+                            pass
+
+                    if service:
+                        s_name = service["name"]
+                        p_type = service["print_type"]
+                        p_size = service["paper_size"]
+                        paper_id = service.get("paper_id")
+                        sheets_per_unit = service.get("sheets_per_unit", 1)
+                    else:
+                        s_name = (it.get("name") or "Custom Service").strip()
+                        p_type = "service"
+                        p_size = "A4"
+                        paper_id = None
+                        sheets_per_unit = 1
+
+                    # Physical sheets
+                    if sheets_per_unit == 0:
+                        sheets = 0
+                    elif is_double:
+                        sheets = qty * ((pages_per_copy + 1) // 2)
+                    else:
+                        sheets = qty * pages_per_copy
+
+                    line_total = money(qty * pages_per_copy * rate)
+                    color_units = qty * pages_per_copy if p_type in ("color", "photo") else 0
+
+                    unit_cost = 0.0
+                    matched_inv_id = paper_id
+                    if matched_inv_id and matched_inv_id in inv_map:
+                        unit_cost = inv_map[matched_inv_id]
+                    else:
+                        size_key = (p_size or '').strip().upper()
+                        if size_key in inv_by_size and sheets > 0:
+                            matched_inv_id, unit_cost = inv_by_size[size_key]
+
+                    line_paper_cost = money(sheets * unit_cost) if sheets > 0 else 0.0
+                    line_profit = money(line_total - line_paper_cost)
+                    total_bill_paper_cost += line_paper_cost
+
+                    items.append({
+                        "service_name": s_name,
+                        "print_type": p_type,
+                        "paper_size": p_size,
+                        "quantity": qty,
+                        "pages_per_copy": pages_per_copy,
+                        "sides": sides,
+                        "rate": rate,
+                        "line_total": line_total,
+                        "paper_sheets": sheets,
+                        "color_units": color_units,
+                        "paper_cost": line_paper_cost,
+                        "profit": line_profit,
+                        "inventory_id": matched_inv_id
+                    })
+                    subtotal += line_total
+
+                if not items:
+                    return {"success": False, "error": "No valid items in bill."}, 400
+
+                subtotal = money(subtotal)
+                discount = min(max(discount, 0), subtotal)
+                total = money(subtotal - discount)
+                paid = total if paid_input == "" else min(max(money(paid_input), 0), total)
+                balance = money(total - paid)
+                total_bill_paper_cost = money(total_bill_paper_cost)
+                bill_profit = money(total - total_bill_paper_cost)
+
+                now_iso = datetime.now().isoformat(timespec="seconds")
+                bill_no = "IR" + datetime.now().strftime("%y%m%d%H%M%S")
+
+                original = bill_no
+                suffix = 1
+                cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
+                while cur.fetchone():
+                    bill_no = f"{original}{suffix}"
+                    suffix += 1
+                    cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
+
+                cur.execute(
+                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, paper_cost, profit, notes)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, total_bill_paper_cost, bill_profit, notes)
+                )
+                bill_id = cur.fetchone()["id"]
+
+                for x in items:
+                    cur.execute(
+                        """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
+                         x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"])
+                    )
+
+                    inv_id = x.get("inventory_id")
+                    sheets_used = x.get("paper_sheets", 0)
+                    if inv_id and sheets_used > 0:
+                        cur.execute("SELECT available_sheets FROM inventory WHERE id=%s FOR UPDATE", (inv_id,))
+                        inv_row = cur.fetchone()
+                        if inv_row:
+                            new_avail = max(0, inv_row['available_sheets'] - sheets_used)
+                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, inv_id))
+                            cur.execute("""
+                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
+                            VALUES (%s, 'SALE', %s, %s, %s, %s, %s)
+                            """, (inv_id, -sheets_used, new_avail, bill_no, f"Billed: {x['service_name']} ({x['sides']})", now_iso))
+
+            conn.commit()
+
+        receipt_url = url_for("receipt", bill_id=bill_id)
+        return {
+            "success": True,
+            "bill_id": bill_id,
+            "bill_no": bill_no,
+            "total": total,
+            "receipt_url": receipt_url
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── Printer Configuration & Test Route (Admin) ──
+@app.route("/printer-settings", methods=["GET", "POST"])
+@admin_required
+def printer_settings_page():
+    with db() as conn:
+        with conn.cursor() as cur:
+            if request.method == "POST":
+                action = request.form.get("action")
+                now = datetime.now().isoformat(timespec="seconds")
+                if action == "save_printer":
+                    p_name = request.form.get("printer_name", "").strip()
+                    p_width = request.form.get("thermal_width", "80mm").strip()
+                    cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at) 
+                    VALUES ('default_printer', %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                    """, (p_name, now))
+                    cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at) 
+                    VALUES ('thermal_width', %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                    """, (p_width, now))
+                    conn.commit()
+                    flash(f"Printer configuration saved: {p_name} ({p_width}).", "success")
+                    return redirect(url_for("printer_settings_page"))
+
+            cur.execute("SELECT value FROM app_settings WHERE key='default_printer'")
+            p_row = cur.fetchone()
+            current_printer = p_row['value'] if p_row else '__SYSTEM_DEFAULT__'
+
+            cur.execute("SELECT value FROM app_settings WHERE key='thermal_width'")
+            w_row = cur.fetchone()
+            thermal_width = w_row['value'] if w_row else '80mm'
+
+    # Discover available system printers via lpstat (if available on host)
+    available_printers = []
+    try:
+        import subprocess
+        out = subprocess.check_output(["lpstat", "-a"], stderr=subprocess.DEVNULL, timeout=2).decode("utf-8")
+        for line in out.splitlines():
+            parts = line.split()
+            if parts:
+                available_printers.append(parts[0])
+    except Exception:
+        pass
+
+    return render_template(
+        "printer_settings.html",
+        current_printer=current_printer,
+        thermal_width=thermal_width,
+        available_printers=available_printers
+    )
 
 # ── Admin Protected Reports & Profit Dashboard ──
 @app.route("/history")

@@ -52,6 +52,8 @@
         <option value="A4 75 GSM (JK Copier)">
         <option value="Legal Paper 75 GSM">
         <option value="A3 Paper 75 GSM">
+        <option value="A4 Lamination 175 Microns">
+        <option value="A4 Lamination 125 Microns">
         <option value="A4 Photo Paper 130 GSM">
         <option value="A4 Photo Paper 220 GSM">
         <option value="A3 Photo Paper 220 GSM">
@@ -365,6 +367,8 @@ function updatePresets(cat) {
   const sheets = document.getElementById('sheetsPerBundleInput');
   if (cat === 'Lamination') {
     list.innerHTML = `
+      <option value="A4 Lamination 175 Microns">
+      <option value="A4 Lamination 125 Microns">
       <option value="Lamination Pouch A4">
       <option value="Lamination Pouch Legal">
       <option value="Lamination Pouch A3">
