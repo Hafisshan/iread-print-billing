@@ -3,61 +3,508 @@
 {% block content %}
 <div class="pagehead">
   <div>
-    <p class="eyebrow">TRANSACTIONS</p>
-    <h1>Bill history</h1>
-    <p class="muted">Latest 200 bills. Search by bill number or customer name.</p>
+    <p class="eyebrow">TRANSACTIONS &amp; RECOVERY</p>
+    <h1>Bill History</h1>
+    <p class="muted">Search bills, track payment statuses, collect balances, and manage audit records.</p>
   </div>
   {% if is_admin %}
   <a class="btn secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
   {% endif %}
 </div>
 
-<form class="searchbar" method="get">
-  <input name="q" value="{{ q }}" placeholder="Search bill number or customer">
-  <button class="btn primary">Search</button>
-  {% if q %}<a href="{{ url_for('history') }}" style="margin-left: 8px;">Clear</a>{% endif %}
-</form>
+<!-- ── Admin Financial Recovery Summary ── -->
+{% if is_admin and stats %}
+<div class="stats" style="margin-bottom: 20px;">
+  <div><span>Total Sales</span><strong style="color: var(--ink);">{{ stats.total_sales|inr }}</strong></div>
+  <div><span>Total Collected</span><strong style="color: var(--green);">{{ stats.total_collected|inr }}</strong></div>
+  <div><span>Outstanding Due</span><strong style="color: #b84a00;">{{ stats.total_outstanding|inr }}</strong></div>
+  <div><span>Pending / Unpaid Bills</span><strong style="color: #9a214b;">{{ stats.unpaid_count }}</strong></div>
+</div>
+{% endif %}
 
+<!-- ── Search & Payment Filters ── -->
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+  <div class="cat-tabs" style="margin: 0;">
+    <a href="{{ url_for('history', status='all', q=q) }}" class="cat-tab {% if status_filter == 'all' %}active{% endif %}">All Bills</a>
+    <a href="{{ url_for('history', status='Paid', q=q) }}" class="cat-tab {% if status_filter == 'Paid' %}active{% endif %}">✔ Paid</a>
+    <a href="{{ url_for('history', status='Partially Paid', q=q) }}" class="cat-tab {% if status_filter == 'Partially Paid' %}active{% endif %}">⏳ Partially Paid</a>
+    <a href="{{ url_for('history', status='Unpaid', q=q) }}" class="cat-tab {% if status_filter == 'Unpaid' %}active{% endif %}">✕ Unpaid</a>
+  </div>
+
+  <form class="searchbar" method="get" style="margin: 0; min-width: 280px; flex: 1; max-width: 440px;">
+    <input type="hidden" name="status" value="{{ status_filter }}">
+    <input name="q" value="{{ q }}" placeholder="Search bill number or customer">
+    <button class="btn primary">Search</button>
+    {% if q %}<a href="{{ url_for('history', status=status_filter) }}" style="margin-left: 8px;">Clear</a>{% endif %}
+  </form>
+</div>
+
+<!-- ── Bills Table ── -->
 <section class="panel tablewrap">
   <table>
     <thead>
       <tr>
-        <th>Bill no.</th>
-        <th>Date/time</th>
+        <th>Bill No.</th>
+        <th>Date/Time</th>
         <th>Customer</th>
         <th>Payment</th>
         <th>Total</th>
         <th>Paid</th>
-        <th>Balance</th>
+        <th>Balance Due</th>
+        <th>Status</th>
         {% if is_admin %}
         <th>Paper Cost</th>
         <th>Gross Profit</th>
         {% endif %}
-        <th></th>
+        <th style="text-align: right;">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for b in bills %}
-      <tr>
+      <tr id="bill-row-{{ b.id }}">
         <td><strong>{{ b.bill_no }}</strong></td>
         <td>{{ b.created_at[:19].replace('T',' ') }}</td>
         <td>{{ b.customer or 'Walk-in' }}</td>
         <td>{{ b.payment_method }}</td>
         <td><strong>{{ b.total|inr }}</strong></td>
-        <td style="color: var(--green);">{{ b.paid|inr }}</td>
-        <td style="color: {% if b.balance > 0 %}#b84a00{% else %}var(--muted){% endif %};">
+        <td style="color: var(--green); font-weight: 600;" id="bill-paid-{{ b.id }}">{{ b.paid|inr }}</td>
+        <td style="color: {% if b.balance > 0.001 %}#b84a00{% else %}var(--muted){% endif %}; font-weight: 700;" id="bill-balance-{{ b.id }}">
           {{ b.balance|inr }}
+        </td>
+        <td id="bill-status-{{ b.id }}">
+          {% if b.balance <= 0.001 or b.payment_status == 'Paid' %}
+            <span class="status-badge" style="background: #e8f5ee; color: #16784b; border: 1px solid #16784b30; font-weight: 700;">✔ PAID</span>
+          {% elif b.paid <= 0.001 or b.payment_status == 'Unpaid' %}
+            <span class="status-badge" style="background: #fde8e8; color: #c81e1e; border: 1px solid #f98080; font-weight: 700;">✕ UNPAID</span>
+          {% else %}
+            <span class="status-badge" style="background: #fef08a; color: #854d0e; border: 1px solid #eab308; font-weight: 700;">⏳ PARTIAL</span>
+          {% endif %}
         </td>
         {% if is_admin %}
         <td style="color: var(--muted);">{{ b.paper_cost|inr }}</td>
         <td style="color: var(--green); font-weight: 700;">{{ b.profit|inr }}</td>
         {% endif %}
-        <td><a href="{{ url_for('receipt', bill_id=b.id) }}" class="btn tiny secondary">Receipt</a></td>
+        <td style="text-align: right;">
+          <div style="display: inline-flex; gap: 6px; align-items: center; justify-content: flex-end;">
+            <a href="{{ url_for('receipt', bill_id=b.id) }}" class="btn tiny secondary">Receipt</a>
+            {% if b.balance > 0.001 %}
+            <button type="button" class="btn tiny primary" onclick="openPaymentModal({{ b.id }}, '{{ b.bill_no }}', {{ b.total }}, {{ b.paid }}, {{ b.balance }})" style="background: #16784b; border-color: #16784b;">
+              Collect ₹
+            </button>
+            {% endif %}
+            {% if is_admin %}
+            <button type="button" class="btn tiny secondary" onclick="openEditBillModal({{ b.id }})">Edit</button>
+            <button type="button" class="btn tiny danger" onclick="confirmDeleteBill({{ b.id }}, '{{ b.bill_no }}')">Delete</button>
+            {% endif %}
+          </div>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="{% if is_admin %}10{% else %}8{% endif %}" class="muted" style="text-align: center; padding: 24px;">No bills found.</td></tr>
+      <tr><td colspan="{% if is_admin %}11{% else %}9{% endif %}" class="muted" style="text-align: center; padding: 32px;">No bills matching this filter found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
+
+<!-- ── COLLECT PAYMENT MODAL ── -->
+<div class="modal-backdrop" id="payModalBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="payModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:480px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:10px;">
+    <h3 style="margin:0; font-size:17px; font-weight:800; color:var(--ink);">Collect Payment — <span id="payBillNo"></span></h3>
+    <button type="button" class="modal-close" onclick="closePayModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
+  </div>
+
+  <div style="background:var(--soft); border-radius:10px; padding:12px 16px; margin-bottom:16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; text-align:center;">
+    <div>
+      <span style="font-size:11px; color:var(--muted); text-transform:uppercase;">Total Bill</span>
+      <strong style="display:block; font-size:14px;" id="payTotalDisplay">₹0.00</strong>
+    </div>
+    <div>
+      <span style="font-size:11px; color:var(--muted); text-transform:uppercase;">Already Paid</span>
+      <strong style="display:block; font-size:14px; color:var(--green);" id="payPaidDisplay">₹0.00</strong>
+    </div>
+    <div>
+      <span style="font-size:11px; color:var(--muted); text-transform:uppercase;">Outstanding</span>
+      <strong style="display:block; font-size:15px; color:#b84a00;" id="payBalDisplay">₹0.00</strong>
+    </div>
+  </div>
+
+  <form id="collectPayForm" onsubmit="submitBillPayment(event)">
+    <input type="hidden" id="payBillId">
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">New Payment Amount (₹)</label>
+      <input type="number" id="payNewAmount" step="0.01" min="0.01" required style="width:100%; padding:10px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:16px; font-weight:800; color:var(--ink); outline:none;" oninput="updateRemainingPreview()">
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Payment Method</label>
+        <select id="payMethod" style="width:100%; padding:9px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;">
+          <option value="Cash">Cash</option>
+          <option value="UPI">UPI / GPay</option>
+          <option value="Card">Card</option>
+          <option value="Credit">Credit</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Remaining Balance</label>
+        <div id="payRemainingPreview" style="padding:10px 12px; background:#f7f5f8; border-radius:8px; font-size:14px; font-weight:800; color:#b84a00;">
+          ₹0.00
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Notes / Reference (Optional)</label>
+      <input type="text" id="payNotes" placeholder="e.g. UPI Ref / Cash Received" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+    </div>
+
+    <!-- Payment history records for this bill -->
+    <div style="margin-bottom:16px;">
+      <span style="font-size:12px; font-weight:700; color:var(--muted); display:block; margin-bottom:6px;">Payment History</span>
+      <div id="payHistoryList" style="max-height:120px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:6px; font-size:12px; background:#faf9fa;">
+        <span class="muted">Loading payments...</span>
+      </div>
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closePayModal()">Cancel</button>
+      <button type="submit" class="btn primary" id="savePayBtn" style="background:#16784b; border-color:#16784b;">Save Payment</button>
+    </div>
+  </form>
+</div>
+
+<!-- ── ADMIN EDIT BILL MODAL ── -->
+{% if is_admin %}
+<div class="modal-backdrop" id="editModalBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="editBillModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:95%; max-width:680px; max-height:90vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:10px;">
+    <h3 style="margin:0; font-size:17px; font-weight:800; color:var(--ink);">Edit Bill &amp; Reconcile Stock — <span id="editBillNo"></span></h3>
+    <button type="button" class="modal-close" onclick="closeEditModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
+  </div>
+
+  <form id="editBillForm" onsubmit="submitBillEdit(event)">
+    <input type="hidden" id="editBillId">
+
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:14px;">
+      <div>
+        <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px;">Customer</label>
+        <input type="text" id="editCustomer" style="width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:13px;">
+      </div>
+      <div>
+        <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px;">Payment Method</label>
+        <select id="editPaymentMethod" style="width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:13px;">
+          <option value="Cash">Cash</option><option value="UPI">UPI</option>
+          <option value="Card">Card</option><option value="Credit">Credit</option><option value="Other">Other</option>
+        </select>
+      </div>
+      <div>
+        <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px;">Discount ₹</label>
+        <input type="number" id="editDiscount" step="0.01" min="0" value="0" style="width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:13px;" oninput="recalcEditTotals()">
+      </div>
+    </div>
+
+    <!-- Items table -->
+    <div style="margin-bottom:14px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:6px;">Bill Items</label>
+      <div style="max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:8px;">
+        <table style="width:100%; font-size:12px; margin:0;" id="editItemsTable">
+          <thead>
+            <tr style="background:var(--soft);">
+              <th>Item / Service</th>
+              <th style="width:80px;">Copies</th>
+              <th style="width:100px;">Sides</th>
+              <th style="width:80px;">Rate ₹</th>
+              <th style="width:80px;">Total ₹</th>
+              <th style="width:40px;"></th>
+            </tr>
+          </thead>
+          <tbody id="editItemsTbody"></tbody>
+        </table>
+      </div>
+      <button type="button" class="btn tiny secondary" style="margin-top:8px;" onclick="addEditItemRow()">+ Add Item</button>
+    </div>
+
+    <!-- Edit totals summary -->
+    <div style="background:var(--soft); border-radius:10px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; font-size:13px;">
+      <div><span>Subtotal: </span><strong id="editSubtotalDisplay">₹0.00</strong></div>
+      <div><span>Discount: </span><strong id="editDiscountDisplay">₹0.00</strong></div>
+      <div><span>Grand Total: </span><strong id="editTotalDisplay" style="color:var(--accent); font-size:15px;">₹0.00</strong></div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px;">Edit Reason / Audit Notes</label>
+      <input type="text" id="editNotes" placeholder="Reason for editing this bill (e.g. Quantity correction)" style="width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-size:13px;" required>
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closeEditModal()">Cancel</button>
+      <button type="submit" class="btn primary" id="saveEditBtn">Save Changes</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<script>
+let currentBillForPay = null;
+
+function fmt(n) {
+  return '₹' + Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+/* ─────────── Collect Payment Modal ─────────── */
+function openPaymentModal(id, billNo, total, paid, balance) {
+  currentBillForPay = { id, billNo, total, paid, balance };
+  document.getElementById('payBillId').value = id;
+  document.getElementById('payBillNo').textContent = billNo;
+  document.getElementById('payTotalDisplay').textContent = fmt(total);
+  document.getElementById('payPaidDisplay').textContent = fmt(paid);
+  document.getElementById('payBalDisplay').textContent = fmt(balance);
+  document.getElementById('payNewAmount').value = balance.toFixed(2);
+  document.getElementById('payNewAmount').max = balance;
+  document.getElementById('payNotes').value = '';
+  updateRemainingPreview();
+
+  // Load existing payments for this bill
+  const list = document.getElementById('payHistoryList');
+  list.innerHTML = '<span class="muted">Loading payments...</span>';
+  fetch(`/api/bills/${id}/payments`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.success && data.payments && data.payments.length > 0) {
+        let html = '<table style="width:100%; margin:0; font-size:11px;">';
+        data.payments.forEach(p => {
+          html += `<tr><td>${p.created_at.slice(0,16).replace('T',' ')}</td><td><strong>${fmt(p.amount)}</strong> (${p.payment_method})</td><td class="muted">${p.recorded_by}</td></tr>`;
+        });
+        html += '</table>';
+        list.innerHTML = html;
+      } else {
+        list.innerHTML = '<span class="muted">No payment history recorded yet.</span>';
+      }
+    })
+    .catch(() => {
+      list.innerHTML = '<span class="muted">Failed to load payment history.</span>';
+    });
+
+  document.getElementById('payModal').style.display = 'block';
+  document.getElementById('payModalBackdrop').style.display = 'block';
+  setTimeout(() => document.getElementById('payNewAmount').focus(), 100);
+}
+
+function closePayModal() {
+  document.getElementById('payModal').style.display = 'none';
+  document.getElementById('payModalBackdrop').style.display = 'none';
+  currentBillForPay = null;
+}
+
+function updateRemainingPreview() {
+  if (!currentBillForPay) return;
+  const newAmt = parseFloat(document.getElementById('payNewAmount').value) || 0;
+  const rem = Math.max(0, currentBillForPay.balance - newAmt);
+  const el = document.getElementById('payRemainingPreview');
+  el.textContent = fmt(rem);
+  el.style.color = rem <= 0.001 ? 'var(--green)' : '#b84a00';
+}
+
+async function submitBillPayment(e) {
+  e.preventDefault();
+  const billId = document.getElementById('payBillId').value;
+  const amount = parseFloat(document.getElementById('payNewAmount').value);
+  const payment_method = document.getElementById('payMethod').value;
+  const notes = document.getElementById('payNotes').value;
+
+  if (!amount || amount <= 0) {
+    alert("Please enter a valid payment amount.");
+    return;
+  }
+
+  const btn = document.getElementById('savePayBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    const res = await fetch(`/api/bills/${billId}/pay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount, payment_method, notes })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to save payment');
+    }
+    closePayModal();
+    // Reload page to refresh metrics and table
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Save Payment';
+  }
+}
+
+/* ─────────── Admin Edit Bill ─────────── */
+{% if is_admin %}
+let editItems = [];
+
+async function openEditBillModal(billId) {
+  try {
+    const res = await fetch(`/api/bills/${billId}/details`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to fetch bill');
+
+    const bill = data.bill;
+    document.getElementById('editBillId').value = bill.id;
+    document.getElementById('editBillNo').textContent = bill.bill_no;
+    document.getElementById('editCustomer').value = bill.customer || '';
+    document.getElementById('editPaymentMethod').value = bill.payment_method || 'Cash';
+    document.getElementById('editDiscount').value = bill.discount || 0;
+    document.getElementById('editNotes').value = '';
+
+    editItems = (data.items || []).map(i => ({
+      name: i.service_name,
+      type: i.print_type,
+      size: i.paper_size,
+      qty: i.quantity,
+      sides: i.sides,
+      rate: i.rate,
+      line_total: i.line_total
+    }));
+
+    renderEditItems();
+    recalcEditTotals();
+
+    document.getElementById('editBillModal').style.display = 'block';
+    document.getElementById('editModalBackdrop').style.display = 'block';
+  } catch (err) {
+    alert("Error opening edit modal: " + err.message);
+  }
+}
+
+function closeEditModal() {
+  document.getElementById('editBillModal').style.display = 'none';
+  document.getElementById('editModalBackdrop').style.display = 'none';
+}
+
+function renderEditItems() {
+  const tbody = document.getElementById('editItemsTbody');
+  tbody.innerHTML = '';
+  editItems.forEach((it, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" value="${it.name}" class="ei-name" data-idx="${idx}" style="width:100%; padding:4px 6px; font-size:12px; border:1px solid #ddd; border-radius:4px;"></td>
+      <td><input type="number" min="1" value="${it.qty}" class="ei-qty" data-idx="${idx}" style="width:100%; padding:4px 6px; font-size:12px; border:1px solid #ddd; border-radius:4px;"></td>
+      <td>
+        <select class="ei-sides" data-idx="${idx}" style="width:100%; padding:4px; font-size:12px; border:1px solid #ddd; border-radius:4px;">
+          <option value="Single" ${it.sides === 'Single' ? 'selected' : ''}>Single</option>
+          <option value="Double-sided" ${it.sides.includes('Double') ? 'selected' : ''}>Double</option>
+        </select>
+      </td>
+      <td><input type="number" step="0.01" min="0" value="${it.rate}" class="ei-rate" data-idx="${idx}" style="width:100%; padding:4px 6px; font-size:12px; border:1px solid #ddd; border-radius:4px;"></td>
+      <td style="font-weight:700;" id="ei-total-${idx}">${fmt(it.qty * it.rate)}</td>
+      <td><button type="button" style="border:none; background:none; color:#c81e1e; font-size:14px; cursor:pointer;" onclick="removeEditItem(${idx})">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('.ei-name, .ei-qty, .ei-sides, .ei-rate').forEach(el => {
+    el.addEventListener('input', () => {
+      const idx = parseInt(el.dataset.idx);
+      editItems[idx].name = tbody.querySelector(`.ei-name[data-idx="${idx}"]`).value.trim();
+      editItems[idx].qty = Math.max(1, parseInt(tbody.querySelector(`.ei-qty[data-idx="${idx}"]`).value) || 1);
+      editItems[idx].sides = tbody.querySelector(`.ei-sides[data-idx="${idx}"]`).value;
+      editItems[idx].rate = parseFloat(tbody.querySelector(`.ei-rate[data-idx="${idx}"]`).value) || 0;
+      editItems[idx].line_total = editItems[idx].qty * editItems[idx].rate;
+      document.getElementById(`ei-total-${idx}`).textContent = fmt(editItems[idx].line_total);
+      recalcEditTotals();
+    });
+  });
+}
+
+function addEditItemRow() {
+  editItems.push({
+    name: 'Additional Service',
+    type: 'bw',
+    size: 'A4',
+    qty: 1,
+    sides: 'Single',
+    rate: 2.0,
+    line_total: 2.0
+  });
+  renderEditItems();
+  recalcEditTotals();
+}
+
+function removeEditItem(idx) {
+  if (editItems.length <= 1) {
+    alert("Bill must have at least one item.");
+    return;
+  }
+  editItems.splice(idx, 1);
+  renderEditItems();
+  recalcEditTotals();
+}
+
+function recalcEditTotals() {
+  const subtotal = editItems.reduce((s, i) => s + (i.qty * i.rate), 0);
+  const discount = Math.min(subtotal, Math.max(0, parseFloat(document.getElementById('editDiscount').value) || 0));
+  const total = Math.max(0, subtotal - discount);
+  document.getElementById('editSubtotalDisplay').textContent = fmt(subtotal);
+  document.getElementById('editDiscountDisplay').textContent = fmt(discount);
+  document.getElementById('editTotalDisplay').textContent = fmt(total);
+}
+
+async function submitBillEdit(e) {
+  e.preventDefault();
+  const billId = document.getElementById('editBillId').value;
+  const customer = document.getElementById('editCustomer').value;
+  const payment_method = document.getElementById('editPaymentMethod').value;
+  const discount = parseFloat(document.getElementById('editDiscount').value) || 0;
+  const notes = document.getElementById('editNotes').value;
+
+  const btn = document.getElementById('saveEditBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    const res = await fetch(`/api/bills/${billId}/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customer, payment_method, discount, notes,
+        items: editItems
+      })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to update bill');
+    closeEditModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Save Changes';
+  }
+}
+
+/* ─────────── Admin Delete Bill ─────────── */
+async function confirmDeleteBill(billId, billNo) {
+  const reason = prompt(`Delete Bill ${billNo}?\nPhysical sheets used will be returned to stock.\nEnter deletion reason:`, "Customer cancelled");
+  if (!reason) return;
+
+  try {
+    const res = await fetch(`/api/bills/${billId}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to delete bill');
+    alert(data.message);
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+}
+{% endif %}
+</script>
 {% endblock %}

@@ -85,9 +85,24 @@
           <input id="cDiscount" class="cart-input-num" type="number" min="0" step="0.01" value="0">
         </div>
         <div class="cart-grand"><span>Total</span><strong id="cTotal">₹0.00</strong></div>
-        <div>
+
+        <!-- Petpooja-style Payment Status & Paid/Unpaid Control -->
+        <div class="payment-status-row" style="display: flex; align-items: center; justify-content: space-between; padding: 7px 0; border-top: 1px dashed var(--line); margin-top: 6px;">
+          <span style="font-weight: 600; font-size: 13px;">Payment</span>
+          <label class="paid-toggle-label" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+            <input type="checkbox" id="cPaidToggle" checked style="width: 18px; height: 18px; accent-color: #16784b; cursor: pointer;">
+            <span id="cPaidBadge" class="status-badge" style="font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: #e8f5ee; color: #16784b; border: 1px solid #16784b40;">
+              ✔ Paid
+            </span>
+          </label>
+        </div>
+        <div id="cPartialRow" style="display: none; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px;">
           <label for="cPaid">Received ₹</label>
-          <input id="cPaid" class="cart-input-num" type="number" min="0" step="0.01" placeholder="Full">
+          <input id="cPaid" class="cart-input-num" type="number" min="0" step="0.01" value="0" placeholder="0.00">
+        </div>
+        <div id="cBalanceRow" style="display: none; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px; color: #b84a00;">
+          <span style="font-weight: 600;">Balance Due</span>
+          <strong id="cBalanceDisplay" style="font-weight: 800; font-size: 15px;">₹0.00</strong>
         </div>
       </div>
       <div class="billing-actions" style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px;">
@@ -149,23 +164,15 @@
         </div>
       </div>
       <div class="mf-group">
-        <label>Pages / copy</label>
-        <div class="stepper">
-          <button type="button" class="step-btn" data-target="mPages" data-delta="-1">−</button>
-          <input id="mPages" class="step-input" type="number" min="1" value="1">
-          <button type="button" class="step-btn" data-target="mPages" data-delta="1">+</button>
-        </div>
-      </div>
-    </div>
-    <div class="mf-row">
-      <div class="mf-group">
         <label>Sides</label>
         <div class="seg-ctrl" id="sidesCtrl">
           <button type="button" class="seg-btn active" data-val="Single">Single Side</button>
           <button type="button" class="seg-btn" data-val="Double-sided">Double Side</button>
         </div>
       </div>
-      <div class="mf-group">
+    </div>
+    <div class="mf-row">
+      <div class="mf-group" style="width: 100%;">
         <label>Rate / unit (₹)</label>
         <input id="mRate" class="modal-rate-input" type="number" min="0" step="0.01">
       </div>
@@ -184,7 +191,7 @@
 
 <script>
 /* ─────────── State ─────────── */
-let cart = [];          // [{id,name,rate,singleRate,doubleRate,type,size,qty,pages,sides,lineTotal}]
+let cart = [];          // [{id,name,rate,singleRate,doubleRate,type,size,qty,sides,lineTotal}]
 let editingIdx = null;  // index of cart item being edited (null = new)
 let currentItemConfig = null;
 
@@ -225,7 +232,7 @@ document.getElementById('tileGrid').addEventListener('click', e => {
     rate: sRate,
     type: tile.dataset.type,
     size: tile.dataset.size,
-    qty: 1, pages: 1, sides: 'Single'
+    qty: 1, sides: 'Single'
   });
 });
 
@@ -242,7 +249,7 @@ if (addCustomBtn) {
       rate: 0,
       type: 'service',
       size: '-',
-      qty: 1, pages: 1, sides: 'Single'
+      qty: 1, sides: 'Single'
     });
   });
 }
@@ -265,7 +272,6 @@ function openModal(item) {
   }
   document.getElementById('mName').value = item.name || '';
   document.getElementById('mQty').value = item.qty || 1;
-  document.getElementById('mPages').value = item.pages || 1;
   
   setSides(item.sides || 'Single');
   if (editingIdx !== null && item.rate !== undefined && item.rate !== null) {
@@ -327,27 +333,29 @@ document.querySelectorAll('.step-btn').forEach(btn => {
   });
 });
 
-['mQty','mPages','mRate'].forEach(id => {
-  document.getElementById(id).addEventListener('input', updateModalAmount);
+['mQty','mRate'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', updateModalAmount);
 });
 
 function updateModalAmount() {
   const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
-  const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
   const rate = parseFloat(document.getElementById('mRate').value) || 0;
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
   const isDouble = sides.toLowerCase().includes('double');
 
-  // Physical sheets calculation
+  // Physical sheets calculation: Single = 1 sheet per copy, Double = 1 sheet per 2 copies (ceil(qty/2))
   let sheets = 0;
-  if (isDouble) {
-    sheets = qty * Math.ceil(pages / 2);
+  if (currentItemConfig && currentItemConfig.type === 'service' && currentItemConfig.size === 'Digital') {
+    sheets = 0;
+  } else if (isDouble) {
+    sheets = Math.ceil(qty / 2);
   } else {
-    sheets = qty * pages;
+    sheets = qty;
   }
   document.getElementById('mSheets').textContent = sheets + ' sheet' + (sheets === 1 ? '' : 's');
 
-  const total = qty * pages * rate;
+  const total = qty * rate;
   document.getElementById('mAmount').textContent = fmt(total);
 }
 
@@ -355,7 +363,6 @@ function updateModalAmount() {
 document.getElementById('modalAdd').addEventListener('click', () => {
   const name  = document.getElementById('mName').value.trim() || 'Item';
   const qty   = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
-  const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
   const rate  = parseFloat(document.getElementById('mRate').value) || 0;
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
   const type  = currentItemConfig ? (currentItemConfig.type || 'service') : (document.getElementById('mCategory').value || 'service');
@@ -363,22 +370,21 @@ document.getElementById('modalAdd').addEventListener('click', () => {
   const id    = currentItemConfig ? currentItemConfig.id : 'custom';
   const singleRate = currentItemConfig && currentItemConfig.singleRate !== undefined ? currentItemConfig.singleRate : rate;
   const doubleRate = currentItemConfig && currentItemConfig.doubleRate !== undefined ? currentItemConfig.doubleRate : rate;
-  const lineTotal = qty * pages * rate;
+  const lineTotal = qty * rate;
 
   if (editingIdx !== null && editingIdx >= 0 && editingIdx < cart.length) {
-    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal };
+    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, rate, singleRate, doubleRate, sides, lineTotal };
   } else {
     const existingIdx = cart.findIndex(item =>
       ((item.id && id !== 'custom' && item.id === id) || (item.name === name)) &&
       item.sides === sides &&
-      item.rate === rate &&
-      item.pages === pages
+      item.rate === rate
     );
     if (existingIdx !== -1) {
       cart[existingIdx].qty += qty;
-      cart[existingIdx].lineTotal = cart[existingIdx].qty * cart[existingIdx].pages * cart[existingIdx].rate;
+      cart[existingIdx].lineTotal = cart[existingIdx].qty * cart[existingIdx].rate;
     } else {
-      cart.push({ id, name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal });
+      cart.push({ id, name, type, size, qty, rate, singleRate, doubleRate, sides, lineTotal });
     }
   }
   closeModal();
@@ -409,7 +415,7 @@ function renderCart() {
         <span class="ci-badge ${item.type}">${item.type.toUpperCase()}</span>
         <div class="ci-detail">
           <span class="ci-name">${escapeHtml(item.name)}</span>
-          <span class="ci-meta">${item.qty} × ${item.pages}p × ₹${Number(item.rate).toFixed(2)} · ${item.sides}</span>
+          <span class="ci-meta">${item.qty} copies × ₹${Number(item.rate).toFixed(2)} · ${item.sides}</span>
         </div>
       </div>
       <div class="ci-right">
@@ -448,7 +454,7 @@ function renderCart() {
       if (idx >= 0 && idx < cart.length) {
         if (cart[idx].qty > 1) {
           cart[idx].qty -= 1;
-          cart[idx].lineTotal = cart[idx].qty * cart[idx].pages * cart[idx].rate;
+          cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
           renderCart();
         }
       }
@@ -462,7 +468,7 @@ function renderCart() {
       const idx = parseInt(btn.dataset.idx);
       if (idx >= 0 && idx < cart.length) {
         cart[idx].qty += 1;
-        cart[idx].lineTotal = cart[idx].qty * cart[idx].pages * cart[idx].rate;
+        cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
         renderCart();
       }
     });
@@ -481,16 +487,69 @@ function renderCart() {
   });
 }
 
-/* ─────────── Recalc totals ─────────── */
+/* ─────────── Recalc totals & Payment Status ─────────── */
 function recalc() {
   const subtotal = cart.reduce((s, i) => s + (i.lineTotal || 0), 0);
   const disc = Math.min(subtotal, Math.max(0, parseFloat(document.getElementById('cDiscount').value) || 0));
+  const total = Math.max(0, subtotal - disc);
   document.getElementById('cSubtotal').textContent = fmt(subtotal);
-  document.getElementById('cTotal').textContent = fmt(subtotal - disc);
-}
-document.getElementById('cDiscount').addEventListener('input', recalc);
+  document.getElementById('cTotal').textContent = fmt(total);
 
-/* ─────────── Submit Actions (Optimised Async & 0-Delay Print) ─────────── */
+  updatePaymentStatusDisplay(total);
+}
+
+function updatePaymentStatusDisplay(total) {
+  const toggle = document.getElementById('cPaidToggle');
+  const isPaidChecked = toggle ? toggle.checked : true;
+  const partialRow = document.getElementById('cPartialRow');
+  const balanceRow = document.getElementById('cBalanceRow');
+  const badge = document.getElementById('cPaidBadge');
+  const paidInput = document.getElementById('cPaid');
+  const balanceDisplay = document.getElementById('cBalanceDisplay');
+
+  if (isPaidChecked) {
+    if (partialRow) partialRow.style.display = 'none';
+    if (balanceRow) balanceRow.style.display = 'none';
+    if (badge) {
+      badge.textContent = '✔ Paid';
+      badge.style.background = '#e8f5ee';
+      badge.style.color = '#16784b';
+      badge.style.borderColor = '#16784b40';
+    }
+  } else {
+    if (partialRow) partialRow.style.display = 'flex';
+    if (balanceRow) balanceRow.style.display = 'flex';
+    const enteredPaid = Math.max(0, parseFloat(paidInput ? paidInput.value : 0) || 0);
+    const actualPaid = Math.min(total, enteredPaid);
+    const bal = Math.max(0, total - actualPaid);
+    if (balanceDisplay) balanceDisplay.textContent = fmt(bal);
+
+    if (badge) {
+      if (actualPaid <= 0) {
+        badge.textContent = '✕ Unpaid';
+        badge.style.background = '#fde8e8';
+        badge.style.color = '#c81e1e';
+        badge.style.borderColor = '#f98080';
+      } else if (bal <= 0.001) {
+        badge.textContent = '✔ Paid';
+        badge.style.background = '#e8f5ee';
+        badge.style.color = '#16784b';
+        badge.style.borderColor = '#16784b40';
+      } else {
+        badge.textContent = '⏳ Partially Paid';
+        badge.style.background = '#fef08a';
+        badge.style.color = '#854d0e';
+        badge.style.borderColor = '#eab308';
+      }
+    }
+  }
+}
+
+document.getElementById('cDiscount').addEventListener('input', recalc);
+document.getElementById('cPaidToggle').addEventListener('change', recalc);
+document.getElementById('cPaid').addEventListener('input', recalc);
+
+/* ─────────── Submit Actions (Optimised Async & Direct Thermal Print) ─────────── */
 let isSubmitting = false;
 
 function showToast(msg, isError) {
@@ -512,17 +571,40 @@ async function handleBillingAction(shouldPrint) {
   saveBtn.disabled = true;
   printBtn.textContent = shouldPrint ? 'Printing…' : 'Saving…';
 
+  const subtotal = cart.reduce((s, i) => s + (i.lineTotal || 0), 0);
+  const discount = Math.min(subtotal, Math.max(0, parseFloat(document.getElementById('cDiscount').value) || 0));
+  const total = Math.max(0, subtotal - discount);
+
+  const isPaidChecked = document.getElementById('cPaidToggle').checked;
+  let paid = total;
+  let balance = 0;
+  let payment_status = 'Paid';
+
+  if (!isPaidChecked) {
+    const rawPaid = parseFloat(document.getElementById('cPaid').value) || 0;
+    paid = Math.min(total, Math.max(0, rawPaid));
+    balance = Math.max(0, total - paid);
+    if (paid <= 0) {
+      payment_status = 'Unpaid';
+    } else if (balance <= 0.001) {
+      payment_status = 'Paid';
+    } else {
+      payment_status = 'Partially Paid';
+    }
+  }
+
   const payload = {
     customer: document.getElementById('pmCustomer').value.trim(),
     payment_method: document.getElementById('pmMethod').value,
-    discount: parseFloat(document.getElementById('cDiscount').value) || 0,
-    paid: document.getElementById('cPaid').value.trim(),
+    discount: discount,
+    paid: paid,
+    balance: balance,
+    payment_status: payment_status,
     notes: '',
     items: cart.map(i => ({
       service_id: i.id,
       name: i.name,
       qty: i.qty,
-      pages: i.pages,
       sides: i.sides,
       rate: i.rate
     }))
@@ -540,16 +622,16 @@ async function handleBillingAction(shouldPrint) {
       throw new Error(data.error || 'Failed to save bill');
     }
 
-    // 1. If print requested, trigger lightweight background iframe print immediately
+    // 1. Direct Thermal Print via lightweight iframe if requested
     if (shouldPrint && data.receipt_url) {
       const frame = document.getElementById('silentReceiptFrame');
       frame.src = data.receipt_url + '?auto=1';
       showToast(`✓ Bill ${data.bill_no} saved & sent to printer!`);
     } else {
-      showToast(`✓ Bill ${data.bill_no} saved successfully!`);
+      showToast(`✓ Bill ${data.bill_no} saved (${payment_status})!`);
     }
 
-    // 2. Immediately reset billing screen for the next customer (0-second wait)
+    // 2. Immediately reset billing screen for the next customer
     resetBillingScreen();
 
   } catch (err) {
@@ -569,7 +651,8 @@ function resetBillingScreen() {
   currentItemConfig = null;
   document.getElementById('pmCustomer').value = '';
   document.getElementById('cDiscount').value = '0';
-  document.getElementById('cPaid').value = '';
+  document.getElementById('cPaidToggle').checked = true;
+  document.getElementById('cPaid').value = '0';
   renderCart();
   document.getElementById('pmCustomer').focus();
 }

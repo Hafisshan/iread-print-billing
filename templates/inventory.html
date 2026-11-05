@@ -32,7 +32,7 @@
 
 <!-- ── Quick Add / Purchase Form ── -->
 <section class="panel">
-  <h2>+ Record Paper Purchase / Add Stock</h2>
+  <h2>+ Record Supplier Purchase / Add Stock</h2>
   <form method="post" class="formgrid">
     <input type="hidden" name="action" value="add">
     
@@ -85,23 +85,55 @@
       <input id="totalSheetsDisplay" type="text" readonly value="500" style="background: #f7f5f8; font-weight: 700; color: var(--accent);">
     </label>
 
-    {% if is_admin %}
+    <!-- Supplier & Invoice Details -->
     <label>
-      Total Purchase Cost (₹)
-      <input name="cost" type="number" min="0" step="0.01" required placeholder="0.00">
+      Biller Name (Staff / Admin)
+      <input name="biller_name" value="{{ 'Admin' if is_admin else '' }}" placeholder="Name of person recording" required>
     </label>
-    {% else %}
-    <input type="hidden" name="cost" value="0">
-    {% endif %}
+
+    <label>
+      Supplier Name
+      <input name="supplier_name" placeholder="e.g. Sree Paper Mart" required>
+    </label>
+
+    <label>
+      Supplier Bill / Invoice #
+      <input name="bill_number" placeholder="e.g. INV-8821" required>
+    </label>
+
+    <label>
+      Total Amount (₹)
+      <input name="total_amount" id="purchTotalAmount" type="number" min="0" step="0.01" value="0.00" required oninput="calcPurchBalance()">
+    </label>
+
+    <label>
+      Paid Amount (₹)
+      <input name="paid_amount" id="purchPaidAmount" type="number" min="0" step="0.01" value="0.00" required oninput="calcPurchBalance()">
+    </label>
+
+    <label>
+      Balance Amount (₹ Auto)
+      <input id="purchBalanceDisplay" type="text" readonly value="₹0.00" style="background: #f7f5f8; font-weight: 700; color: #b84a00;">
+    </label>
+
+    <label>
+      Payment Method
+      <select name="payment_method">
+        <option value="Cash">Cash</option>
+        <option value="Bank Transfer">Bank Transfer / NEFT</option>
+        <option value="UPI">UPI / GPay</option>
+        <option value="Credit">Supplier Credit (Pay Later)</option>
+      </select>
+    </label>
 
     <label>
       Reorder Alert Level (Sheets)
       <input name="reorder_level" type="number" min="10" value="100" required>
     </label>
 
-    <label style="{% if is_admin %}grid-column: span 4;{% else %}grid-column: span 3;{% endif %}">
-      Supplier / Invoice Reference (optional)
-      <input name="notes" placeholder="e.g. Bill #1042 / Sree Paper Mart">
+    <label style="grid-column: span 2;">
+      Notes / Remarks (optional)
+      <input name="notes" placeholder="e.g. 5 boxes delivered, batch #2">
     </label>
 
     <div class="align-end" style="grid-column: span 4;">
@@ -191,6 +223,97 @@
             </div>
           </td>
           {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ── Supplier Purchases & Invoices Ledger ── -->
+<section class="panel">
+  <div class="section-title">
+    <h2>Supplier Paper Purchases &amp; Payables ({{ purchases|length }})</h2>
+  </div>
+
+  {% if is_admin and purchase_stats %}
+  <div class="stats" style="margin-bottom: 16px;">
+    <div><span>Total Purchases</span><strong>{{ purchase_stats.total_purchases|inr }}</strong></div>
+    <div><span>Paid to Suppliers</span><strong style="color: var(--green);">{{ purchase_stats.total_paid_supplier|inr }}</strong></div>
+    <div><span>Outstanding Payable</span><strong style="color: #b84a00;">{{ purchase_stats.total_supplier_balance|inr }}</strong></div>
+    <div><span>Pending Invoices</span><strong style="color: #9a214b;">{{ purchase_stats.pending_purchases_count }}</strong></div>
+  </div>
+  {% endif %}
+
+  <!-- Filter bar for purchases -->
+  <form method="get" class="searchbar" style="margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px;">
+    <input name="p_bill" value="{{ p_bill }}" placeholder="Filter by invoice/bill #" style="flex: 1; min-width: 140px;">
+    <input name="p_biller" value="{{ p_biller }}" placeholder="Filter by biller/staff" style="flex: 1; min-width: 140px;">
+    <input type="date" name="p_date" value="{{ p_date }}" style="padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 8px;">
+    <button class="btn primary">Filter</button>
+    {% if p_bill or p_biller or p_date %}
+    <a href="{{ url_for('inventory_page') }}" style="align-self: center; margin-left: 6px;">Clear</a>
+    {% endif %}
+  </form>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Invoice #</th>
+          <th>Supplier</th>
+          <th>Biller</th>
+          <th>Item Purchased</th>
+          <th>Sheets</th>
+          <th>Total Cost</th>
+          <th>Paid</th>
+          <th>Balance Due</th>
+          <th>Status</th>
+          <th style="text-align: right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if not purchases %}
+        <tr>
+          <td colspan="11" class="muted" style="text-align: center; padding: 24px;">No purchase records found matching filters.</td>
+        </tr>
+        {% endif %}
+        {% for p in purchases %}
+        <tr>
+          <td style="font-size: 11px;">{{ p.purchase_date }}</td>
+          <td><strong>{{ p.bill_number or '-' }}</strong></td>
+          <td>{{ p.supplier_name or 'Direct Supplier' }}</td>
+          <td class="muted">{{ p.biller_name or 'Admin' }}</td>
+          <td>
+            <strong>{{ p.item_name }}</strong>
+            <span class="muted" style="display: block; font-size: 11px;">{{ p.bundles }} bundle(s) × {{ p.sheets_per_bundle }}</span>
+          </td>
+          <td><strong>{{ p.total_sheets }}</strong></td>
+          <td>{{ p.total_amount|inr }}</td>
+          <td style="color: var(--green);">{{ p.paid_amount|inr }}</td>
+          <td style="color: {% if p.balance_amount > 0.001 %}#b84a00{% else %}var(--muted){% endif %}; font-weight: 700;">
+            {{ p.balance_amount|inr }}
+          </td>
+          <td>
+            {% if p.balance_amount <= 0.001 or p.payment_status == 'Paid' %}
+              <span class="status-badge" style="background: #e8f5ee; color: #16784b; border: 1px solid #16784b30; font-weight: 700;">✔ PAID</span>
+            {% elif p.paid_amount <= 0.001 or p.payment_status == 'Unpaid' %}
+              <span class="status-badge" style="background: #fde8e8; color: #c81e1e; border: 1px solid #f98080; font-weight: 700;">✕ UNPAID</span>
+            {% else %}
+              <span class="status-badge" style="background: #fef08a; color: #854d0e; border: 1px solid #eab308; font-weight: 700;">⏳ PARTIAL</span>
+            {% endif %}
+          </td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 4px; justify-content: flex-end;">
+              <button type="button" class="btn tiny secondary" onclick="viewSupplierPayments({{ p.id }}, '{{ p.bill_number|e }}', '{{ p.supplier_name|e }}')">Ledger</button>
+              {% if is_admin and p.balance_amount > 0.001 %}
+              <button type="button" class="btn tiny primary" onclick="openSupplierPayModal({{ p.id }}, '{{ p.bill_number|e }}', '{{ p.supplier_name|e }}', {{ p.total_amount }}, {{ p.paid_amount }}, {{ p.balance_amount }})" style="background: #16784b; border-color: #16784b;">
+                Pay ₹
+              </button>
+              {% endif %}
+            </div>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -354,6 +477,76 @@
 </div>
 {% endif %}
 
+<!-- ── Pay Supplier Modal (Admin) ── -->
+<div class="modal-backdrop" id="supPayBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="supPayModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:460px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800;">Pay Supplier — <span id="supPayBillNo"></span></h3>
+    <button type="button" class="modal-close" onclick="closeSupplierPayModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
+  </div>
+  <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">Supplier: <strong id="supPaySupplier" style="color:var(--ink);"></strong></p>
+  
+  <div style="background:var(--soft); border-radius:10px; padding:10px 14px; margin-bottom:14px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center;">
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Total Bill</span><strong style="display:block; font-size:13px;" id="supPayTotal">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Paid</span><strong style="display:block; font-size:13px; color:var(--green);" id="supPayPaid">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Outstanding</span><strong style="display:block; font-size:13px; color:#b84a00;" id="supPayBal">₹0.00</strong></div>
+  </div>
+
+  <form id="supPayForm" onsubmit="submitSupplierPayment(event)">
+    <input type="hidden" id="supPayId">
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Payment Amount (₹)</label>
+      <input type="number" id="supPayAmount" step="0.01" min="0.01" required style="width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:15px; font-weight:800; color:var(--ink); outline:none;">
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Payment Method</label>
+        <select id="supPayMethod" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:7px; font-size:13px;">
+          <option value="Cash">Cash</option>
+          <option value="Bank Transfer">Bank Transfer</option>
+          <option value="UPI">UPI / GPay</option>
+          <option value="Cheque">Cheque</option>
+        </select>
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Payment Date</label>
+        <input type="date" id="supPayDate" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:7px; font-size:13px;">
+      </div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reference / Notes</label>
+      <input type="text" id="supPayNotes" placeholder="e.g. UTR # or Cheque #" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:7px; font-size:13px;">
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closeSupplierPayModal()">Cancel</button>
+      <button type="submit" class="btn primary" id="supPaySubmitBtn" style="background:#16784b; border-color:#16784b;">Save Payment</button>
+    </div>
+  </form>
+</div>
+
+<!-- ── View Supplier Payment History Modal ── -->
+<div class="modal-backdrop" id="supLedgerBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="supLedgerModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:520px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800;">Supplier Payments — <span id="supLedgerBillNo"></span></h3>
+    <button type="button" class="modal-close" onclick="closeSupplierLedgerModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
+  </div>
+  <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">Supplier: <strong id="supLedgerSupplier" style="color:var(--ink);"></strong></p>
+  <div style="max-height:240px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
+    <table style="width:100%; font-size:12px; margin:0;">
+      <thead>
+        <tr style="background:var(--soft);">
+          <th>Date</th><th>Amount</th><th>Method</th><th>Recorded By</th>
+        </tr>
+      </thead>
+      <tbody id="supLedgerBody"></tbody>
+    </table>
+  </div>
+  <div style="text-align:right;">
+    <button type="button" class="btn secondary" onclick="closeSupplierLedgerModal()">Close</button>
+  </div>
+</div>
+
 <script>
 function calcTotalSheets() {
   const b = parseInt(document.getElementById('bundlesInput').value) || 0;
@@ -403,6 +596,108 @@ function updatePresets(cat) {
 calcTotalSheets();
 
 // Modal Functions (Admin)
+function calcPurchBalance() {
+  const tot = parseFloat(document.getElementById('purchTotalAmount').value) || 0;
+  const pd = parseFloat(document.getElementById('purchPaidAmount').value) || 0;
+  const bal = Math.max(0, tot - pd);
+  document.getElementById('purchBalanceDisplay').value = '₹' + bal.toFixed(2);
+}
+calcPurchBalance();
+
+// Supplier Payment Modal
+let currentPurchForPay = null;
+
+function openSupplierPayModal(id, billNo, supplier, total, paid, balance) {
+  currentPurchForPay = { id, billNo, supplier, total, paid, balance };
+  document.getElementById('supPayId').value = id;
+  document.getElementById('supPayBillNo').textContent = billNo;
+  document.getElementById('supPaySupplier').textContent = supplier;
+  document.getElementById('supPayTotal').textContent = '₹' + total.toFixed(2);
+  document.getElementById('supPayPaid').textContent = '₹' + paid.toFixed(2);
+  document.getElementById('supPayBal').textContent = '₹' + balance.toFixed(2);
+  document.getElementById('supPayAmount').value = balance.toFixed(2);
+  document.getElementById('supPayAmount').max = balance;
+  document.getElementById('supPayDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('supPayModal').style.display = 'block';
+  document.getElementById('supPayBackdrop').style.display = 'block';
+}
+
+function closeSupplierPayModal() {
+  document.getElementById('supPayModal').style.display = 'none';
+  document.getElementById('supPayBackdrop').style.display = 'none';
+}
+
+async function submitSupplierPayment(e) {
+  e.preventDefault();
+  const id = document.getElementById('supPayId').value;
+  const amount = parseFloat(document.getElementById('supPayAmount').value);
+  const payment_method = document.getElementById('supPayMethod').value;
+  const payment_date = document.getElementById('supPayDate').value;
+  const notes = document.getElementById('supPayNotes').value;
+
+  if (!amount || amount <= 0) {
+    alert("Please enter a valid payment amount.");
+    return;
+  }
+
+  const btn = document.getElementById('supPaySubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    const res = await fetch(`/api/purchases/${id}/pay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount, payment_method, payment_date, notes })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to record payment');
+    closeSupplierPayModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Save Payment';
+  }
+}
+
+// Supplier Payments History Modal
+function viewSupplierPayments(id, billNo, supplier) {
+  document.getElementById('supLedgerBillNo').textContent = billNo;
+  document.getElementById('supLedgerSupplier').textContent = supplier;
+  const body = document.getElementById('supLedgerBody');
+  body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">Loading...</td></tr>';
+  document.getElementById('supLedgerModal').style.display = 'block';
+  document.getElementById('supLedgerBackdrop').style.display = 'block';
+
+  fetch(`/api/purchases/${id}/payments`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.success && data.payments && data.payments.length > 0) {
+        let html = '';
+        data.payments.forEach(p => {
+          html += `<tr>
+            <td>${p.payment_date || p.created_at.slice(0, 10)}</td>
+            <td><strong>₹${Number(p.amount).toFixed(2)}</strong></td>
+            <td>${p.payment_method}</td>
+            <td class="muted">${p.recorded_by} ${p.notes ? '— ' + p.notes : ''}</td>
+          </tr>`;
+        });
+        body.innerHTML = html;
+      } else {
+        body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">No payment records found.</td></tr>';
+      }
+    })
+    .catch(() => {
+      body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">Failed to load payments.</td></tr>';
+    });
+}
+
+function closeSupplierLedgerModal() {
+  document.getElementById('supLedgerModal').style.display = 'none';
+  document.getElementById('supLedgerBackdrop').style.display = 'none';
+}
+
 function openAdjustModal(item) {
   document.getElementById('adjItemId').value = item.id;
   document.getElementById('adjItemName').value = item.item_name + ' (Current: ' + item.available_sheets + ' sheets)';

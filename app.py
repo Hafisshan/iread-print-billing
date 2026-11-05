@@ -146,7 +146,79 @@ def init_db():
                     notes TEXT DEFAULT '',
                     created_at TEXT NOT NULL
                 );
+
+                -- Migrations for Payment Status, Direct Printing & Audit
+                ALTER TABLE bills ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'Paid';
+                ALTER TABLE bills ADD COLUMN IF NOT EXISTS is_deleted INTEGER NOT NULL DEFAULT 0;
+
+                CREATE TABLE IF NOT EXISTS bill_payments (
+                    id SERIAL PRIMARY KEY,
+                    bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+                    amount REAL NOT NULL,
+                    payment_method TEXT NOT NULL DEFAULT 'Cash',
+                    recorded_by TEXT DEFAULT 'Staff',
+                    notes TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS bill_audit_log (
+                    id SERIAL PRIMARY KEY,
+                    bill_id INTEGER,
+                    bill_no TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    performed_by TEXT NOT NULL DEFAULT 'Admin',
+                    details TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS purchases (
+                    id SERIAL PRIMARY KEY,
+                    purchase_date TEXT NOT NULL,
+                    biller_name TEXT NOT NULL DEFAULT '',
+                    supplier_name TEXT NOT NULL DEFAULT '',
+                    bill_number TEXT NOT NULL DEFAULT '',
+                    item_id INTEGER REFERENCES inventory(id) ON DELETE SET NULL,
+                    item_name TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'Paper',
+                    bundles INTEGER NOT NULL DEFAULT 1,
+                    sheets_per_bundle INTEGER NOT NULL DEFAULT 500,
+                    total_sheets INTEGER NOT NULL DEFAULT 500,
+                    total_amount REAL NOT NULL DEFAULT 0,
+                    paid_amount REAL NOT NULL DEFAULT 0,
+                    balance_amount REAL NOT NULL DEFAULT 0,
+                    payment_status TEXT NOT NULL DEFAULT 'Paid',
+                    notes TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS purchase_payments (
+                    id SERIAL PRIMARY KEY,
+                    purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+                    amount REAL NOT NULL,
+                    payment_date TEXT NOT NULL,
+                    payment_method TEXT NOT NULL DEFAULT 'Cash',
+                    recorded_by TEXT DEFAULT 'Admin',
+                    notes TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
                 """)
+
+                # Seed essential paper stock if empty
+                cur.execute("SELECT COUNT(*) AS c FROM inventory")
+                if cur.fetchone()["c"] == 0:
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    default_papers = [
+                        ('Paper', 'A4 75 GSM (JK Copier)', 'A4', 10, 500, 5000, 5000, 500, 2500.0, 'Initial JK Copier stock'),
+                        ('Paper', 'Legal Paper 75 GSM', 'Legal', 5, 500, 2500, 2500, 250, 1500.0, 'Initial Legal paper stock'),
+                        ('Paper', 'A3 Paper 75 GSM', 'A3', 2, 500, 1000, 1000, 100, 1000.0, 'Initial A3 paper stock'),
+                        ('Lamination', 'A4 Lamination 125 Microns', 'A4', 5, 100, 500, 500, 50, 1250.0, 'Standard 125 mic pouches'),
+                        ('Lamination', 'A4 Lamination 175 Microns', 'A4', 5, 100, 500, 500, 50, 1750.0, 'Heavy 175 mic pouches')
+                    ]
+                    for p in default_papers:
+                        cur.execute("""
+                        INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (*p, now_iso))
             conn.commit()
     except Exception as e:
         print(f"init_db skipped or failed: {e}")
@@ -210,16 +282,30 @@ def inventory_page():
                     category = request.form.get("category", "Paper").strip()
                     item_name = request.form.get("item_name", "").strip()
                     size_spec = request.form.get("size_spec", "").strip()
+                    biller_name = request.form.get("biller_name", "").strip() or ("Admin" if is_admin else "Staff")
+                    supplier_name = request.form.get("supplier_name", "").strip()
+                    bill_number = request.form.get("bill_number", "").strip()
                     try:
                         bundles = max(1, int(request.form.get("bundles", 1)))
                         sheets_per_bundle = max(1, int(request.form.get("sheets_per_bundle", 500)))
                         added_sheets = bundles * sheets_per_bundle
-                        cost = max(0.0, money(request.form.get("cost", 0))) if is_admin else 0.0
+                        total_amount = max(0.0, money(request.form.get("total_amount") or request.form.get("cost", 0)))
+                        paid_amount = max(0.0, money(request.form.get("paid_amount", 0)))
+                        balance_amount = max(0.0, money(total_amount - paid_amount))
+                        payment_method = request.form.get("payment_method", "Cash").strip()
+                        purchase_date = request.form.get("purchase_date") or date.today().isoformat()
                         reorder_level = max(10, int(request.form.get("reorder_level", 100)))
                         notes = request.form.get("notes", "").strip()
 
                         if not item_name:
                             raise ValueError("Item name cannot be empty")
+
+                        if paid_amount >= total_amount and total_amount > 0:
+                            purch_status = "Paid"
+                        elif paid_amount <= 0:
+                            purch_status = "Unpaid"
+                        else:
+                            purch_status = "Partially Paid"
 
                         # Check if paper with this name already exists
                         cur.execute("SELECT id, total_sheets, available_sheets, cost FROM inventory WHERE item_name ILIKE %s", (item_name,))
@@ -227,7 +313,7 @@ def inventory_page():
                         if existing:
                             new_total = existing['total_sheets'] + added_sheets
                             new_avail = existing['available_sheets'] + added_sheets
-                            new_cost = existing['cost'] + cost
+                            new_cost = existing['cost'] + total_amount
                             cur.execute("""
                             UPDATE inventory 
                             SET total_sheets=%s, available_sheets=%s, cost=%s, bundles=bundles+%s, updated_at=%s, notes=%s
@@ -240,18 +326,33 @@ def inventory_page():
                             INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             RETURNING id
-                            """, (category, item_name, size_spec, bundles, sheets_per_bundle, added_sheets, added_sheets, reorder_level, cost, notes, now))
+                            """, (category, item_name, size_spec, bundles, sheets_per_bundle, added_sheets, added_sheets, reorder_level, total_amount, notes, now))
                             item_id = cur.fetchone()['id']
                             bal = added_sheets
+
+                        # Insert into purchases table (Supplier Purchase Record)
+                        cur.execute("""
+                        INSERT INTO purchases (purchase_date, biller_name, supplier_name, bill_number, item_id, item_name, category, bundles, sheets_per_bundle, total_sheets, total_amount, paid_amount, balance_amount, payment_status, notes, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """, (purchase_date, biller_name, supplier_name, bill_number, item_id, item_name, category, bundles, sheets_per_bundle, added_sheets, total_amount, paid_amount, balance_amount, purch_status, notes, now))
+                        purchase_id = cur.fetchone()['id']
+
+                        # Record initial supplier payment if paid_amount > 0
+                        if paid_amount > 0:
+                            cur.execute("""
+                            INSERT INTO purchase_payments (purchase_id, amount, payment_date, payment_method, recorded_by, notes, created_at)
+                            VALUES (%s, %s, %s, %s, %s, 'Initial purchase payment', %s)
+                            """, (purchase_id, paid_amount, purchase_date, payment_method, biller_name, now))
 
                         # Log to stock ledger
                         cur.execute("""
                         INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
                         VALUES (%s, 'PURCHASE', %s, %s, %s, %s, %s)
-                        """, (item_id, added_sheets, bal, notes or 'Stock Purchase', f"{bundles} ream(s)", now))
+                        """, (item_id, added_sheets, bal, bill_number or f"{bundles} ream(s)", f"Supplier: {supplier_name} | By: {biller_name}", now))
 
                         conn.commit()
-                        flash(f"Recorded stock addition: +{added_sheets} sheets of '{item_name}'.", "success")
+                        flash(f"Recorded stock purchase: +{added_sheets} sheets of '{item_name}' (Invoice: {bill_number or 'N/A'}).", "success")
                     except Exception as e:
                         conn.rollback()
                         flash(f"Error adding stock entry: {e}", "error")
@@ -362,10 +463,46 @@ def inventory_page():
             """)
             movements = cur.fetchall()
 
+            # Purchase history & filters
+            p_bill = request.args.get("p_bill", "").strip()
+            p_biller = request.args.get("p_biller", "").strip()
+            p_date = request.args.get("p_date", "").strip()
+
+            p_query = "SELECT * FROM purchases WHERE 1=1"
+            p_params = []
+            if p_bill:
+                p_query += " AND bill_number ILIKE %s"
+                p_params.append(f"%{p_bill}%")
+            if p_biller:
+                p_query += " AND biller_name ILIKE %s"
+                p_params.append(f"%{p_biller}%")
+            if p_date:
+                p_query += " AND purchase_date = %s"
+                p_params.append(p_date)
+
+            p_query += " ORDER BY id DESC LIMIT 100"
+            cur.execute(p_query, tuple(p_params))
+            purchases = cur.fetchall()
+
+            # Supplier purchase stats
+            cur.execute("""
+            SELECT COALESCE(SUM(total_amount), 0) AS total_purchases,
+                   COALESCE(SUM(paid_amount), 0) AS total_paid_supplier,
+                   COALESCE(SUM(balance_amount), 0) AS total_supplier_balance,
+                   COUNT(CASE WHEN balance_amount > 0.001 THEN 1 END) AS pending_purchases_count
+            FROM purchases
+            """)
+            purchase_stats = cur.fetchone()
+
     return render_template(
         "inventory.html",
         inventory=items,
         movements=movements,
+        purchases=purchases,
+        purchase_stats=purchase_stats,
+        p_bill=p_bill,
+        p_biller=p_biller,
+        p_date=p_date,
         total_items=total_items,
         total_available_sheets=total_available_sheets,
         total_valuation=total_valuation,
@@ -433,10 +570,10 @@ def index():
                 cur.execute("SELECT * FROM services WHERE active=1 ORDER BY print_type, name")
                 services = cur.fetchall()
                 today = date.today().isoformat()
-                cur.execute("SELECT COALESCE(SUM(total),0) AS today_total FROM bills WHERE substr(created_at,1,10)=%s", (today,))
+                cur.execute("SELECT COALESCE(SUM(total),0) AS today_total FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0", (today,))
                 row = cur.fetchone()
                 today_total = row['today_total'] if row else 0
-                cur.execute("SELECT COUNT(*) AS today_count FROM bills WHERE substr(created_at,1,10)=%s", (today,))
+                cur.execute("SELECT COUNT(*) AS today_count FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0", (today,))
                 row = cur.fetchone()
                 today_count = row['today_count'] if row else 0
         return render_template("index.html", services=services, today_total=today_total, today_count=today_count)
@@ -564,6 +701,13 @@ def create_bill():
             total      = money(subtotal - discount)
             paid       = total if paid_input.strip() == "" else min(max(money(paid_input), 0), total)
             balance    = money(total - paid)
+            if paid <= 0.001:
+                payment_status = "Unpaid"
+            elif balance <= 0.001:
+                payment_status = "Paid"
+            else:
+                payment_status = "Partially Paid"
+
             total_bill_paper_cost = money(total_bill_paper_cost)
             # Gross profit for bill = total selling after discount - total paper cost
             bill_profit = money(total - total_bill_paper_cost)
@@ -580,13 +724,20 @@ def create_bill():
                 suffix += 1
                 cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
 
-            # Insert Bill record with paper_cost and profit
+            # Insert Bill record with payment_status, paper_cost and profit
             cur.execute(
-                """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, paper_cost, profit, notes)
-                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, total_bill_paper_cost, bill_profit, notes)
+                """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes)
             )
             bill_id = cur.fetchone()["id"]
+
+            # Record initial payment in bill_payments if paid > 0
+            if paid > 0:
+                cur.execute("""
+                    INSERT INTO bill_payments(bill_id, amount, payment_method, recorded_by, notes, created_at)
+                    VALUES(%s, %s, %s, %s, 'Initial bill payment', %s)
+                """, (bill_id, paid, payment, 'Admin' if session.get('is_admin') else 'Staff', now_iso))
 
             # Insert Bill Items
             for x in items:
@@ -637,6 +788,7 @@ def create_bill_api():
         payment = data.get("payment_method") or "Cash"
         discount = money(data.get("discount", 0))
         paid_input = str(data.get("paid", "")).strip()
+        req_status = (data.get("payment_status") or "").strip()
         notes = (data.get("notes") or "").strip()
         raw_items = data.get("items") or []
 
@@ -667,7 +819,7 @@ def create_bill_api():
                     s_id = str(it.get("service_id", "")).strip()
                     try:
                         qty = max(1, int(it.get("qty", 1)))
-                        pages_per_copy = max(1, int(it.get("pages", 1)))
+                        pages_per_copy = max(1, int(it.get("pages", 1))) if it.get("pages") else 1
                         rate = money(it.get("rate", 0))
                     except (ValueError, TypeError):
                         continue
@@ -696,16 +848,16 @@ def create_bill_api():
                         paper_id = None
                         sheets_per_unit = 1
 
-                    # Physical sheets
+                    # Physical sheets: Single = 1 sheet per copy, Double = 1 sheet per 2 copies (ceil(qty/2))
                     if sheets_per_unit == 0:
                         sheets = 0
                     elif is_double:
-                        sheets = qty * ((pages_per_copy + 1) // 2)
+                        sheets = (qty + 1) // 2
                     else:
-                        sheets = qty * pages_per_copy
+                        sheets = qty
 
-                    line_total = money(qty * pages_per_copy * rate)
-                    color_units = qty * pages_per_copy if p_type in ("color", "photo") else 0
+                    line_total = money(qty * rate)
+                    color_units = qty if p_type in ("color", "photo") else 0
 
                     unit_cost = 0.0
                     matched_inv_id = paper_id
@@ -725,7 +877,7 @@ def create_bill_api():
                         "print_type": p_type,
                         "paper_size": p_size,
                         "quantity": qty,
-                        "pages_per_copy": pages_per_copy,
+                        "pages_per_copy": 1,
                         "sides": sides,
                         "rate": rate,
                         "line_total": line_total,
@@ -743,8 +895,22 @@ def create_bill_api():
                 subtotal = money(subtotal)
                 discount = min(max(discount, 0), subtotal)
                 total = money(subtotal - discount)
-                paid = total if paid_input == "" else min(max(money(paid_input), 0), total)
+                if paid_input == "":
+                    paid = total
+                else:
+                    paid = min(max(money(paid_input), 0), total)
                 balance = money(total - paid)
+
+                if req_status:
+                    payment_status = req_status
+                else:
+                    if paid <= 0.001:
+                        payment_status = "Unpaid"
+                    elif balance <= 0.001:
+                        payment_status = "Paid"
+                    else:
+                        payment_status = "Partially Paid"
+
                 total_bill_paper_cost = money(total_bill_paper_cost)
                 bill_profit = money(total - total_bill_paper_cost)
 
@@ -760,11 +926,18 @@ def create_bill_api():
                     cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
 
                 cur.execute(
-                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, paper_cost, profit, notes)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, total_bill_paper_cost, bill_profit, notes)
+                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes)
                 )
                 bill_id = cur.fetchone()["id"]
+
+                # Record initial payment in bill_payments if paid > 0
+                if paid > 0:
+                    cur.execute("""
+                        INSERT INTO bill_payments(bill_id, amount, payment_method, recorded_by, notes, created_at)
+                        VALUES(%s, %s, %s, %s, 'Initial bill payment', %s)
+                    """, (bill_id, paid, payment, 'Admin' if session.get('is_admin') else 'Staff', now_iso))
 
                 for x in items:
                     cur.execute(
@@ -795,6 +968,9 @@ def create_bill_api():
             "bill_id": bill_id,
             "bill_no": bill_no,
             "total": total,
+            "paid": paid,
+            "balance": balance,
+            "payment_status": payment_status,
             "receipt_url": receipt_url
         }
     except Exception as e:
@@ -853,23 +1029,424 @@ def printer_settings_page():
         available_printers=available_printers
     )
 
-# ── Admin Protected Reports & Profit Dashboard ──
+# ── Bill History (Accessible by Staff & Admin, Confidential Costs Hidden from Staff) ──
 @app.route("/history")
-@admin_required
 def history():
     q = request.args.get("q", "").strip()
+    status_filter = request.args.get("status", "all").strip()
+    is_admin = bool(session.get("is_admin"))
+
     with db() as conn:
         with conn.cursor() as cur:
-            if q:
-                cur.execute(
-                    "SELECT * FROM bills WHERE bill_no ILIKE %s OR customer ILIKE %s ORDER BY id DESC LIMIT 200",
-                    (f"%{q}%", f"%{q}%")
-                )
-            else:
-                cur.execute("SELECT * FROM bills ORDER BY id DESC LIMIT 200")
-            bills = cur.fetchall()
-    return render_template("history.html", bills=bills, q=q, is_admin=bool(session.get("is_admin")))
+            # Summary metrics (restricted to Admin in template)
+            cur.execute("""
+                SELECT COALESCE(SUM(total), 0) AS total_sales,
+                       COALESCE(SUM(paid), 0) AS total_collected,
+                       COALESCE(SUM(balance), 0) AS total_outstanding,
+                       COUNT(CASE WHEN balance > 0.001 THEN 1 END) AS unpaid_count,
+                       COUNT(*) AS total_count
+                FROM bills
+                WHERE is_deleted = 0
+            """)
+            stats = cur.fetchone()
 
+            query = "SELECT * FROM bills WHERE is_deleted = 0"
+            params = []
+
+            if q:
+                query += " AND (bill_no ILIKE %s OR customer ILIKE %s)"
+                params.extend([f"%{q}%", f"%{q}%"])
+
+            if status_filter == "Paid":
+                query += " AND payment_status = 'Paid'"
+            elif status_filter == "Unpaid":
+                query += " AND payment_status = 'Unpaid'"
+            elif status_filter == "Partially Paid":
+                query += " AND payment_status = 'Partially Paid'"
+
+            query += " ORDER BY id DESC LIMIT 200"
+            cur.execute(query, tuple(params))
+            bills = cur.fetchall()
+
+    return render_template(
+        "history.html",
+        bills=bills,
+        q=q,
+        status_filter=status_filter,
+        stats=stats,
+        is_admin=is_admin
+    )
+
+# ── API: Collect Bill Payment (Staff & Admin) ──
+@app.post("/api/bills/<int:bill_id>/pay")
+def collect_bill_payment(bill_id):
+    try:
+        data = request.get_json(force=True) or {}
+        new_amount = money(data.get("amount", 0))
+        payment_method = data.get("payment_method") or "Cash"
+        notes = (data.get("notes") or "").strip()
+        recorded_by = "Admin" if session.get("is_admin") else "Staff"
+        now_iso = datetime.now().isoformat(timespec="seconds")
+
+        if new_amount <= 0:
+            return {"success": False, "error": "Payment amount must be greater than zero."}, 400
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0 FOR UPDATE", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found."}, 404
+
+                cur_balance = money(bill["balance"])
+                if new_amount > (cur_balance + 0.01):
+                    return {
+                        "success": False,
+                        "error": f"Payment amount ({inr(new_amount)}) cannot exceed outstanding balance of {inr(cur_balance)}."
+                    }, 400
+
+                new_paid = money(bill["paid"] + new_amount)
+                new_balance = max(0.0, money(bill["total"] - new_paid))
+                new_status = "Paid" if new_balance <= 0.001 else "Partially Paid"
+
+                cur.execute("""
+                    UPDATE bills 
+                    SET paid=%s, balance=%s, payment_status=%s 
+                    WHERE id=%s
+                """, (new_paid, new_balance, new_status, bill_id))
+
+                cur.execute("""
+                    INSERT INTO bill_payments (bill_id, amount, payment_method, recorded_by, notes, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (bill_id, new_amount, payment_method, recorded_by, notes, now_iso))
+
+            conn.commit()
+
+        return {
+            "success": True,
+            "bill_id": bill_id,
+            "paid": new_paid,
+            "balance": new_balance,
+            "payment_status": new_status,
+            "message": f"Payment of {inr(new_amount)} recorded successfully."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Bill Payments History ──
+@app.get("/api/bills/<int:bill_id>/payments")
+def get_bill_payments(bill_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found"}, 404
+
+                cur.execute("SELECT * FROM bill_payments WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
+                payments = cur.fetchall()
+
+        return {
+            "success": True,
+            "bill": {
+                "id": bill["id"],
+                "bill_no": bill["bill_no"],
+                "total": bill["total"],
+                "paid": bill["paid"],
+                "balance": bill["balance"],
+                "payment_status": bill.get("payment_status", "Paid")
+            },
+            "payments": payments
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Bill Details (Items & Payments for Modal) ──
+@app.get("/api/bills/<int:bill_id>/details")
+def get_bill_details(bill_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found"}, 404
+
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
+                items = cur.fetchall()
+
+                cur.execute("SELECT * FROM bill_payments WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
+                payments = cur.fetchall()
+
+        return {
+            "success": True,
+            "bill": bill,
+            "items": items,
+            "payments": payments,
+            "is_admin": bool(session.get("is_admin"))
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Delete Bill (Admin only with stock return) ──
+@app.post("/api/bills/<int:bill_id>/delete")
+@admin_required
+def delete_bill(bill_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        reason = (data.get("reason") or "Deleted by admin").strip()
+        now_iso = datetime.now().isoformat(timespec="seconds")
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0 FOR UPDATE", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found or already deleted."}, 404
+
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (bill_id,))
+                items = cur.fetchall()
+
+                # Reconcile inventory stock: return used paper sheets back to inventory
+                total_sheets_reversed = 0
+                for it in items:
+                    sheets = it.get("paper_sheets", 0)
+                    if sheets > 0:
+                        cur.execute("SELECT id, available_sheets FROM inventory WHERE size_spec ILIKE %s LIMIT 1", (it["paper_size"],))
+                        target_inv = cur.fetchone()
+                        if target_inv:
+                            new_bal = target_inv["available_sheets"] + sheets
+                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_bal, now_iso, target_inv["id"]))
+                            cur.execute("""
+                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
+                            VALUES (%s, 'RETURN', %s, %s, %s, %s, %s)
+                            """, (target_inv["id"], sheets, new_bal, bill["bill_no"], f"Reversed: Bill {bill['bill_no']} deleted", now_iso))
+                            total_sheets_reversed += sheets
+
+                # Mark bill as deleted (soft delete preserving financial audit records)
+                cur.execute("""
+                    UPDATE bills 
+                    SET is_deleted=1, notes=notes || %s 
+                    WHERE id=%s
+                """, (f" [DELETED: {reason}]", bill_id))
+
+                # Log audit record
+                audit_details = f"Bill {bill['bill_no']} deleted. Reason: {reason}. Reversed {total_sheets_reversed} physical sheets."
+                cur.execute("""
+                    INSERT INTO bill_audit_log (bill_id, bill_no, action, performed_by, details, created_at)
+                    VALUES (%s, %s, 'DELETE', 'Admin', %s, %s)
+                """, (bill_id, bill["bill_no"], audit_details, now_iso))
+
+            conn.commit()
+
+        return {"success": True, "message": f"Bill {bill['bill_no']} successfully deleted and {total_sheets_reversed} sheets returned to stock."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Edit Bill (Admin only with stock reconciliation) ──
+@app.post("/api/bills/<int:bill_id>/edit")
+@admin_required
+def edit_bill(bill_id):
+    try:
+        data = request.get_json(force=True) or {}
+        customer = (data.get("customer") or "").strip()
+        payment_method = data.get("payment_method") or "Cash"
+        discount = money(data.get("discount", 0))
+        notes = (data.get("notes") or "").strip()
+        raw_items = data.get("items") or []
+        now_iso = datetime.now().isoformat(timespec="seconds")
+
+        if not raw_items:
+            return {"success": False, "error": "Bill must contain at least one item."}, 400
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0 FOR UPDATE", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found."}, 404
+
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (bill_id,))
+                old_items = cur.fetchall()
+
+                # Step A: Return old items' sheets to inventory
+                for o_it in old_items:
+                    sheets = o_it.get("paper_sheets", 0)
+                    if sheets > 0:
+                        cur.execute("SELECT id, available_sheets FROM inventory WHERE size_spec ILIKE %s LIMIT 1", (o_it["paper_size"],))
+                        inv_row = cur.fetchone()
+                        if inv_row:
+                            new_avail = inv_row["available_sheets"] + sheets
+                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, inv_row["id"]))
+                            cur.execute("""
+                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
+                            VALUES (%s, 'RETURN', %s, %s, %s, 'Edit reversal', %s)
+                            """, (inv_row["id"], sheets, new_avail, bill["bill_no"], now_iso))
+
+                # Step B: Delete old bill items
+                cur.execute("DELETE FROM bill_items WHERE bill_id=%s", (bill_id,))
+
+                # Step C: Re-calculate new items, sheets, costs, totals
+                cur.execute("""
+                SELECT id, item_name, size_spec, available_sheets, 
+                       ROUND((cost / NULLIF(total_sheets,0))::numeric, 4) AS cost_per_sheet
+                FROM inventory
+                """)
+                inv_rows = cur.fetchall()
+                inv_by_size = { (r['size_spec'] or '').strip().upper(): (r['id'], float(r['cost_per_sheet'] or 0.0)) for r in inv_rows }
+
+                subtotal = 0.0
+                total_paper_cost = 0.0
+
+                for it in raw_items:
+                    s_name = (it.get("name") or "Service").strip()
+                    p_type = (it.get("type") or "bw").strip()
+                    p_size = (it.get("size") or "A4").strip()
+                    qty = max(1, int(it.get("qty", 1)))
+                    sides = it.get("sides") or "Single"
+                    rate = money(it.get("rate", 0))
+                    line_total = money(qty * rate)
+
+                    is_double = sides.lower().startswith("double")
+                    sheets = ((qty + 1) // 2) if is_double else qty
+
+                    unit_cost = 0.0
+                    target_inv_id = None
+                    size_key = p_size.upper()
+                    if size_key in inv_by_size and sheets > 0:
+                        target_inv_id, unit_cost = inv_by_size[size_key]
+
+                    line_paper_cost = money(sheets * unit_cost) if sheets > 0 else 0.0
+                    line_profit = money(line_total - line_paper_cost)
+                    total_paper_cost += line_paper_cost
+                    subtotal += line_total
+
+                    cur.execute("""
+                        INSERT INTO bill_items (bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit)
+                        VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, 0, %s, %s)
+                    """, (bill_id, s_name, p_type, p_size, qty, sides, rate, line_total, sheets, line_paper_cost, line_profit))
+
+                    # Deduct new sheets from inventory
+                    if target_inv_id and sheets > 0:
+                        cur.execute("SELECT available_sheets FROM inventory WHERE id=%s FOR UPDATE", (target_inv_id,))
+                        inv_now = cur.fetchone()
+                        if inv_now:
+                            new_avail = max(0, inv_now["available_sheets"] - sheets)
+                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, target_inv_id))
+                            cur.execute("""
+                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
+                            VALUES (%s, 'SALE', %s, %s, %s, 'Edit deduction', %s)
+                            """, (target_inv_id, -sheets, new_avail, bill["bill_no"], now_iso))
+
+                subtotal = money(subtotal)
+                discount = min(max(discount, 0), subtotal)
+                total = money(subtotal - discount)
+                total_paper_cost = money(total_paper_cost)
+                profit = money(total - total_paper_cost)
+
+                cur_paid = money(bill["paid"])
+                new_balance = max(0.0, money(total - cur_paid))
+                if cur_paid <= 0:
+                    new_status = "Unpaid"
+                elif new_balance <= 0.001:
+                    new_status = "Paid"
+                else:
+                    new_status = "Partially Paid"
+
+                cur.execute("""
+                    UPDATE bills 
+                    SET customer=%s, payment_method=%s, subtotal=%s, discount=%s, total=%s, balance=%s,
+                        paper_cost=%s, profit=%s, payment_status=%s, notes=%s
+                    WHERE id=%s
+                """, (customer, payment_method, subtotal, discount, total, new_balance, total_paper_cost, profit, new_status, notes, bill_id))
+
+                audit_details = f"Bill {bill['bill_no']} edited. New Total: ₹{total}, Balance: ₹{new_balance}, Status: {new_status}."
+                cur.execute("""
+                    INSERT INTO bill_audit_log (bill_id, bill_no, action, performed_by, details, created_at)
+                    VALUES (%s, %s, 'EDIT', 'Admin', %s, %s)
+                """, (bill_id, bill["bill_no"], audit_details, now_iso))
+
+            conn.commit()
+
+        return {"success": True, "message": f"Bill {bill['bill_no']} updated successfully."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Record Supplier Purchase Payment (Admin only) ──
+@app.post("/api/purchases/<int:purchase_id>/pay")
+@admin_required
+def pay_supplier_purchase(purchase_id):
+    try:
+        data = request.get_json(force=True) or {}
+        new_amount = money(data.get("amount", 0))
+        payment_method = data.get("payment_method") or "Cash"
+        payment_date = data.get("payment_date") or date.today().isoformat()
+        notes = (data.get("notes") or "").strip()
+        recorded_by = "Admin"
+        now_iso = datetime.now().isoformat(timespec="seconds")
+
+        if new_amount <= 0:
+            return {"success": False, "error": "Payment amount must be greater than zero."}, 400
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM purchases WHERE id=%s FOR UPDATE", (purchase_id,))
+                purch = cur.fetchone()
+                if not purch:
+                    return {"success": False, "error": "Purchase not found."}, 404
+
+                cur_balance = money(purch["balance_amount"])
+                if new_amount > (cur_balance + 0.01):
+                    return {"success": False, "error": f"Payment amount ({inr(new_amount)}) cannot exceed outstanding supplier balance of {inr(cur_balance)}."}, 400
+
+                new_paid = money(purch["paid_amount"] + new_amount)
+                new_balance = max(0.0, money(purch["total_amount"] - new_paid))
+                new_status = "Paid" if new_balance <= 0.001 else "Partially Paid"
+
+                cur.execute("""
+                    UPDATE purchases 
+                    SET paid_amount=%s, balance_amount=%s, payment_status=%s 
+                    WHERE id=%s
+                """, (new_paid, new_balance, new_status, purchase_id))
+
+                cur.execute("""
+                    INSERT INTO purchase_payments (purchase_id, amount, payment_date, payment_method, recorded_by, notes, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (purchase_id, new_amount, payment_date, payment_method, recorded_by, notes, now_iso))
+
+            conn.commit()
+
+        return {
+            "success": True,
+            "purchase_id": purchase_id,
+            "paid": new_paid,
+            "balance": new_balance,
+            "payment_status": new_status,
+            "message": f"Supplier payment of {inr(new_amount)} recorded."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Get Supplier Purchase Payments ──
+@app.get("/api/purchases/<int:purchase_id>/payments")
+def get_purchase_payments(purchase_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM purchases WHERE id=%s", (purchase_id,))
+                purch = cur.fetchone()
+                if not purch:
+                    return {"success": False, "error": "Purchase not found"}, 404
+
+                cur.execute("SELECT * FROM purchase_payments WHERE purchase_id=%s ORDER BY id ASC", (purchase_id,))
+                payments = cur.fetchall()
+
+        return {"success": True, "purchase": purch, "payments": payments}
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── Admin Protected Reports & Profit Dashboard ──
 @app.route("/reports")
 @admin_required
 def reports():
@@ -888,7 +1465,7 @@ def reports():
                        COALESCE(SUM(balance),0) AS balance,
                        COALESCE(SUM(paper_cost),0) AS paper_cost,
                        COALESCE(SUM(profit),0) AS profit
-                FROM bills WHERE substr(created_at,1,10)=%s
+                FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0
             """, (selected_date,))
             summary = cur.fetchone()
 
@@ -899,7 +1476,7 @@ def reports():
                        COALESCE(SUM(CASE WHEN i.print_type='bw' THEN i.quantity*i.pages_per_copy ELSE 0 END),0) AS bw_units,
                        COALESCE(SUM(i.paper_cost),0) AS paper_cost
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE substr(b.created_at,1,10)=%s
+                WHERE substr(b.created_at,1,10)=%s AND b.is_deleted=0
             """, (selected_date,))
             usage = cur.fetchone()
 
@@ -907,7 +1484,7 @@ def reports():
             cur.execute("""
                 SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount,
                        COALESCE(SUM(paid),0) AS paid
-                FROM bills WHERE substr(created_at,1,10)=%s GROUP BY payment_method
+                FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0 GROUP BY payment_method
             """, (selected_date,))
             payment_rows = cur.fetchall()
 
@@ -932,7 +1509,7 @@ def reports():
                        SUM(i.paper_cost) AS paper_cost,
                        SUM(i.profit) AS profit
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE substr(b.created_at,1,10)=%s
+                WHERE substr(b.created_at,1,10)=%s AND b.is_deleted=0
                 GROUP BY i.service_name, i.print_type ORDER BY amount DESC
             """, (selected_date,))
             top_items = cur.fetchall()
@@ -1062,10 +1639,10 @@ def export_csv():
     import csv, io
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Bill No", "Date/Time", "Customer", "Payment", "Subtotal", "Discount", "Total", "Paid", "Balance", "Paper Cost", "Gross Profit"])
+    writer.writerow(["Bill No", "Date/Time", "Customer", "Payment Method", "Status", "Subtotal", "Discount", "Total", "Paid", "Balance", "Paper Cost", "Gross Profit"])
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT bill_no,created_at,customer,payment_method,subtotal,discount,total,paid,balance,paper_cost,profit FROM bills ORDER BY id DESC")
+            cur.execute("SELECT bill_no,created_at,customer,payment_method,payment_status,subtotal,discount,total,paid,balance,paper_cost,profit FROM bills WHERE is_deleted=0 ORDER BY id DESC")
             rows = cur.fetchall()
             writer.writerows([tuple(r.values()) for r in rows])
     response = make_response(output.getvalue())

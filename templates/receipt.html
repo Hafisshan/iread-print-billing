@@ -36,7 +36,7 @@
       <tr>
         <td>
           {{ item.service_name }}
-          <div class="tiny">{{ item.pages_per_copy }}p/copy · {{ item.sides }}</div>
+          {% if item.sides and item.sides != '-' %}<div class="tiny">{{ item.sides }}</div>{% endif %}
         </td>
         <td style="text-align:center;">{{ item.quantity }}</td>
         <td style="text-align:right;">{{ item.rate|inr }}</td>
