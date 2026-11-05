@@ -188,6 +188,16 @@ let cart = [];          // [{id,name,rate,singleRate,doubleRate,type,size,qty,pa
 let editingIdx = null;  // index of cart item being edited (null = new)
 let currentItemConfig = null;
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 /* ─────────── Category filter ─────────── */
 document.getElementById('catTabs').addEventListener('click', e => {
   const btn = e.target.closest('.cat-tab');
@@ -258,7 +268,11 @@ function openModal(item) {
   document.getElementById('mPages').value = item.pages || 1;
   
   setSides(item.sides || 'Single');
-  updateRateForSides(item.sides || 'Single');
+  if (editingIdx !== null && item.rate !== undefined && item.rate !== null) {
+    document.getElementById('mRate').value = item.rate;
+  } else {
+    updateRateForSides(item.sides || 'Single');
+  }
   updateModalAmount();
 
   document.getElementById('itemModal').classList.add('open');
@@ -344,17 +358,28 @@ document.getElementById('modalAdd').addEventListener('click', () => {
   const pages = Math.max(1, parseInt(document.getElementById('mPages').value) || 1);
   const rate  = parseFloat(document.getElementById('mRate').value) || 0;
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
-  const type  = currentItemConfig ? currentItemConfig.type : (document.getElementById('mCategory').value || 'service');
-  const size  = currentItemConfig ? currentItemConfig.size : '-';
+  const type  = currentItemConfig ? (currentItemConfig.type || 'service') : (document.getElementById('mCategory').value || 'service');
+  const size  = currentItemConfig ? (currentItemConfig.size || '-') : '-';
   const id    = currentItemConfig ? currentItemConfig.id : 'custom';
-  const singleRate = currentItemConfig ? currentItemConfig.singleRate : rate;
-  const doubleRate = currentItemConfig ? currentItemConfig.doubleRate : rate;
+  const singleRate = currentItemConfig && currentItemConfig.singleRate !== undefined ? currentItemConfig.singleRate : rate;
+  const doubleRate = currentItemConfig && currentItemConfig.doubleRate !== undefined ? currentItemConfig.doubleRate : rate;
   const lineTotal = qty * pages * rate;
 
-  if (editingIdx !== null) {
+  if (editingIdx !== null && editingIdx >= 0 && editingIdx < cart.length) {
     cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal };
   } else {
-    cart.push({ id, name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal });
+    const existingIdx = cart.findIndex(item =>
+      ((item.id && id !== 'custom' && item.id === id) || (item.name === name)) &&
+      item.sides === sides &&
+      item.rate === rate &&
+      item.pages === pages
+    );
+    if (existingIdx !== -1) {
+      cart[existingIdx].qty += qty;
+      cart[existingIdx].lineTotal = cart[existingIdx].qty * cart[existingIdx].pages * cart[existingIdx].rate;
+    } else {
+      cart.push({ id, name, type, size, qty, pages, rate, singleRate, doubleRate, sides, lineTotal });
+    }
   }
   closeModal();
   renderCart();
@@ -363,16 +388,18 @@ document.getElementById('modalAdd').addEventListener('click', () => {
 /* ─────────── Cart render ─────────── */
 function renderCart() {
   const el = document.getElementById('cartItems');
-  const empty = document.getElementById('cartEmpty');
+  if (!el) return;
+
   if (cart.length === 0) {
-    el.innerHTML = '';
-    el.appendChild(empty);
-    document.getElementById('saveAndPrintBtn').disabled = true;
-    document.getElementById('saveOnlyBtn').disabled = true;
+    el.innerHTML = '<div class="cart-empty" id="cartEmpty">Tap a service to add it →</div>';
+    const printBtn = document.getElementById('saveAndPrintBtn');
+    const saveBtn = document.getElementById('saveOnlyBtn');
+    if (printBtn) printBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
     recalc();
     return;
   }
-  empty.remove();
+
   el.innerHTML = '';
   cart.forEach((item, idx) => {
     const div = document.createElement('div');
@@ -381,41 +408,82 @@ function renderCart() {
       <div class="ci-info" data-idx="${idx}">
         <span class="ci-badge ${item.type}">${item.type.toUpperCase()}</span>
         <div class="ci-detail">
-          <span class="ci-name">${item.name}</span>
-          <span class="ci-meta">${item.qty} × ${item.pages}p × ₹${item.rate} · ${item.sides}</span>
+          <span class="ci-name">${escapeHtml(item.name)}</span>
+          <span class="ci-meta">${item.qty} × ${item.pages}p × ₹${Number(item.rate).toFixed(2)} · ${item.sides}</span>
         </div>
       </div>
       <div class="ci-right">
+        <div class="ci-qty-ctrl" style="display:inline-flex; align-items:center; border:1px solid #e0dbe3; border-radius:6px; background:#fff; margin-right:4px;">
+          <button type="button" class="ci-qty-btn ci-qty-dec" data-idx="${idx}" style="border:none; background:transparent; padding:2px 7px; font-size:13px; font-weight:700; cursor:pointer; color:#777; line-height:1;">−</button>
+          <span class="ci-qty-val" style="font-size:12px; font-weight:700; min-width:18px; text-align:center; padding:0 2px;">${item.qty}</span>
+          <button type="button" class="ci-qty-btn ci-qty-inc" data-idx="${idx}" style="border:none; background:transparent; padding:2px 7px; font-size:13px; font-weight:700; cursor:pointer; color:#777; line-height:1;">+</button>
+        </div>
         <span class="ci-total">${fmt(item.lineTotal)}</span>
-        <button class="ci-del" data-idx="${idx}" aria-label="Remove">✕</button>
+        <button type="button" class="ci-del" data-idx="${idx}" aria-label="Remove">✕</button>
       </div>`;
     el.appendChild(div);
   });
-  document.getElementById('saveAndPrintBtn').disabled = false;
-  document.getElementById('saveOnlyBtn').disabled = false;
+  const printBtn = document.getElementById('saveAndPrintBtn');
+  const saveBtn = document.getElementById('saveOnlyBtn');
+  if (printBtn) printBtn.disabled = false;
+  if (saveBtn) saveBtn.disabled = false;
   recalc();
 
   // Edit on tap
   el.querySelectorAll('.ci-info').forEach(row => {
     row.addEventListener('click', () => {
-      editingIdx = parseInt(row.dataset.idx);
-      const item = cart[editingIdx];
-      openModal(item);
+      const idx = parseInt(row.dataset.idx);
+      if (idx >= 0 && idx < cart.length) {
+        editingIdx = idx;
+        openModal(cart[editingIdx]);
+      }
     });
   });
+
+  // Quantity decrease
+  el.querySelectorAll('.ci-qty-dec').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx);
+      if (idx >= 0 && idx < cart.length) {
+        if (cart[idx].qty > 1) {
+          cart[idx].qty -= 1;
+          cart[idx].lineTotal = cart[idx].qty * cart[idx].pages * cart[idx].rate;
+          renderCart();
+        }
+      }
+    });
+  });
+
+  // Quantity increase
+  el.querySelectorAll('.ci-qty-inc').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx);
+      if (idx >= 0 && idx < cart.length) {
+        cart[idx].qty += 1;
+        cart[idx].lineTotal = cart[idx].qty * cart[idx].pages * cart[idx].rate;
+        renderCart();
+      }
+    });
+  });
+
   // Delete
   el.querySelectorAll('.ci-del').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      cart.splice(parseInt(btn.dataset.idx), 1);
-      renderCart();
+      const idx = parseInt(btn.dataset.idx);
+      if (idx >= 0 && idx < cart.length) {
+        cart.splice(idx, 1);
+        renderCart();
+      }
     });
   });
 }
 
 /* ─────────── Recalc totals ─────────── */
 function recalc() {
-  const subtotal = cart.reduce((s, i) => s + i.lineTotal, 0);
+  const subtotal = cart.reduce((s, i) => s + (i.lineTotal || 0), 0);
   const disc = Math.min(subtotal, Math.max(0, parseFloat(document.getElementById('cDiscount').value) || 0));
   document.getElementById('cSubtotal').textContent = fmt(subtotal);
   document.getElementById('cTotal').textContent = fmt(subtotal - disc);
