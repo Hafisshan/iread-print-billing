@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">STOCK MANAGEMENT &amp; AUDIT</p>
     <h1>Paper &amp; Stock Inventory</h1>
-    <p class="muted">Live paper sheet balance, automated deductions, purchases, and stock ledger.</p>
+    <p class="muted">Live paper sheet balance, automated deductions, supplier purchases, and stock ledger.</p>
   </div>
   <div class="stats">
     <div><span>Total Paper Types</span><strong>{{ total_items }}</strong></div>
@@ -30,114 +30,129 @@
 </div>
 {% endif %}
 
-<!-- ── Quick Add / Purchase Form ── -->
-<section class="panel">
-  <h2>+ Record Supplier Purchase / Add Stock</h2>
-  <form method="post" class="formgrid">
-    <input type="hidden" name="action" value="add">
-    
-    <label>
-      Category
-      <select name="category" id="itemCat" required onchange="updatePresets(this.value)">
-        <option value="Paper">Paper (Photostat / Laser / Photo)</option>
-        <option value="Lamination">Lamination Sheet</option>
-        <option value="Other">Other Material / Binding</option>
-      </select>
-    </label>
+<!-- ── Datalist Presets for Paper Items ── -->
+<datalist id="inventoryPresets">
+  {% for it in inventory %}
+    <option value="{{ it.item_name|e }}" data-cat="{{ it.category|e }}" data-size="{{ it.size_spec|e }}">
+  {% endfor %}
+  <option value="A4 75 GSM (JK Copier)" data-cat="Paper" data-size="A4">
+  <option value="Legal Paper 75 GSM" data-cat="Paper" data-size="Legal">
+  <option value="A3 Paper 75 GSM" data-cat="Paper" data-size="A3">
+  <option value="A4 Lamination 125 Microns" data-cat="Lamination" data-size="A4">
+  <option value="A4 Lamination 175 Microns" data-cat="Lamination" data-size="A4">
+  <option value="A4 Photo Paper 130 GSM" data-cat="Paper" data-size="A4">
+  <option value="A4 Photo Paper 220 GSM" data-cat="Paper" data-size="A4">
+  <option value="A3 Photo Paper 220 GSM" data-cat="Paper" data-size="A3">
+  <option value="Laser 12x18 130 GSM" data-cat="Paper" data-size="12x18">
+  <option value="Laser 12x18 220 GSM" data-cat="Paper" data-size="12x18">
+  <option value="Laser 12x18 Sticker Sheet" data-cat="Paper" data-size="12x18">
+</datalist>
 
-    <label>
-      Paper / Material Name
-      <input name="item_name" id="itemNameInput" list="itemPresets" required placeholder="e.g. A4 75 GSM (JK Copier)">
-      <datalist id="itemPresets">
-        <option value="A4 75 GSM (JK Copier)">
-        <option value="Legal Paper 75 GSM">
-        <option value="A3 Paper 75 GSM">
-        <option value="A4 Lamination 175 Microns">
-        <option value="A4 Lamination 125 Microns">
-        <option value="A4 Photo Paper 130 GSM">
-        <option value="A4 Photo Paper 220 GSM">
-        <option value="A3 Photo Paper 220 GSM">
-        <option value="Laser 12x18 130 GSM">
-        <option value="Laser 12x18 220 GSM">
-        <option value="Laser 12x18 Waterproof">
-        <option value="Laser 12x18 Sticker Sheet">
-        <option value="Laser 12x18 Sticker Waterproof">
-      </datalist>
-    </label>
+<!-- ── Multi-Item Supplier Purchase Panel ── -->
+<section class="panel" id="purchasePanel">
+  <div class="section-title" style="margin-bottom: 14px;">
+    <div>
+      <h2 style="margin: 0;">+ Record Supplier Purchase / Add Stock</h2>
+      <p class="muted" style="font-size: 13px; margin: 2px 0 0;">Record single or multi-item supplier bills with stock and payables tracking.</p>
+    </div>
+  </div>
 
-    <label>
-      Size / Spec
-      <input name="size_spec" id="sizeInput" value="A4" placeholder="e.g. A4, Legal, A3, 12x18, ID Card">
-    </label>
+  <form id="multiPurchaseForm" onsubmit="submitMultiPurchase(event)">
+    <!-- Header Fields -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;">
+      <label>
+        Supplier Name <span style="color: #c81e1e;">*</span>
+        <input name="supplier_name" id="pSupplierName" required placeholder="e.g. Sree Paper Mart" style="width: 100%;">
+      </label>
+      <label>
+        Supplier Bill / Invoice # <span style="color: #c81e1e;">*</span>
+        <input name="bill_number" id="pBillNumber" required placeholder="e.g. INV-8821" style="width: 100%;">
+      </label>
+      <label>
+        Purchase Date <span style="color: #c81e1e;">*</span>
+        <input type="date" name="purchase_date" id="pPurchaseDate" required style="width: 100%;">
+      </label>
+      <label>
+        Biller / Received By
+        <input name="biller_name" id="pBillerName" value="{{ 'Admin' if is_admin else 'Staff' }}" placeholder="Name of person recording" style="width: 100%;">
+      </label>
+      <label>
+        Payment Method
+        <select name="payment_method" id="pPaymentMethod" style="width: 100%;">
+          <option value="Cash">Cash</option>
+          <option value="Bank Transfer">Bank Transfer / NEFT</option>
+          <option value="UPI">UPI / GPay</option>
+          <option value="Credit">Supplier Credit (Pay Later)</option>
+        </select>
+      </label>
+      <label>
+        Notes / Remarks (optional)
+        <input name="notes" id="pNotes" placeholder="e.g. 5 boxes delivered, batch #2" style="width: 100%;">
+      </label>
+    </div>
 
-    <label>
-      No. of Bundles / Reams
-      <input name="bundles" id="bundlesInput" type="number" min="1" value="1" required oninput="calcTotalSheets()">
-    </label>
+    <!-- Multi-Item Paper Table -->
+    <div style="margin-bottom: 14px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <strong style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink);">
+          Paper Items in this Purchase Bill
+        </strong>
+        <button type="button" class="btn tiny secondary" onclick="addPurchaseRow()" style="font-weight: 700;">
+          + Add Another Item
+        </button>
+      </div>
 
-    <label>
-      Sheets per Bundle
-      <input name="sheets_per_bundle" id="sheetsPerBundleInput" type="number" min="1" value="500" required oninput="calcTotalSheets()">
-    </label>
+      <div class="tablewrap" style="border: 1.5px solid var(--line); border-radius: 12px; overflow: hidden;">
+        <table style="width: 100%; margin: 0; background: #fff;" id="purchItemsTable">
+          <thead>
+            <tr style="background: var(--soft);">
+              <th style="width: 32%;">Paper / Material Item</th>
+              <th style="width: 15%;">Category</th>
+              <th style="width: 12%;">Size</th>
+              <th style="width: 15%; text-align: right;">Quantity (Sheets)</th>
+              <th style="width: 13%; text-align: right;">Unit Cost (₹)</th>
+              <th style="width: 13%; text-align: right;">Line Total (₹)</th>
+              <th style="width: 40px; text-align: center;"></th>
+            </tr>
+          </thead>
+          <tbody id="purchItemsBody">
+            <!-- Dynamic Rows injected via JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-    <label>
-      Total Sheets (Auto)
-      <input id="totalSheetsDisplay" type="text" readonly value="500" style="background: #f7f5f8; font-weight: 700; color: var(--accent);">
-    </label>
+    <!-- Summary and Balances Card -->
+    <div style="background: #faf8fc; border: 1.5px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; align-items: center;">
+      <div>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; display: block;">Items &amp; Sheets</span>
+        <strong id="purchSummaryCounts" style="font-size: 15px; color: var(--ink);">1 item · 500 sheets</strong>
+      </div>
+      <div>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; display: block;">Total Purchase Amount</span>
+        <strong id="purchTotalDisplay" style="font-size: 18px; color: var(--accent);">₹0.00</strong>
+      </div>
+      <div>
+        <label style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; display: block; margin-bottom: 4px;">
+          Amount Paid (₹)
+        </label>
+        <input type="number" step="0.01" min="0" id="purchPaidAmount" value="0.00" oninput="calcPurchaseSummary()" style="width: 100%; font-weight: 800; font-size: 15px; padding: 6px 10px; border: 1.5px solid var(--line); border-radius: 8px;">
+      </div>
+      <div>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; display: block;">Outstanding Balance</span>
+        <strong id="purchBalanceDisplay" style="font-size: 18px; color: #b84a00;">₹0.00</strong>
+      </div>
+      <div>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; display: block; margin-bottom: 4px;">Payment Status</span>
+        <span id="purchStatusBadge" class="status-badge" style="background: #fde8e8; color: #c81e1e; font-weight: 800;">UNPAID</span>
+      </div>
+    </div>
 
-    <!-- Supplier & Invoice Details -->
-    <label>
-      Biller Name (Staff / Admin)
-      <input name="biller_name" value="{{ 'Admin' if is_admin else '' }}" placeholder="Name of person recording" required>
-    </label>
-
-    <label>
-      Supplier Name
-      <input name="supplier_name" placeholder="e.g. Sree Paper Mart" required>
-    </label>
-
-    <label>
-      Supplier Bill / Invoice #
-      <input name="bill_number" placeholder="e.g. INV-8821" required>
-    </label>
-
-    <label>
-      Total Amount (₹)
-      <input name="total_amount" id="purchTotalAmount" type="number" min="0" step="0.01" value="0.00" required oninput="calcPurchBalance()">
-    </label>
-
-    <label>
-      Paid Amount (₹)
-      <input name="paid_amount" id="purchPaidAmount" type="number" min="0" step="0.01" value="0.00" required oninput="calcPurchBalance()">
-    </label>
-
-    <label>
-      Balance Amount (₹ Auto)
-      <input id="purchBalanceDisplay" type="text" readonly value="₹0.00" style="background: #f7f5f8; font-weight: 700; color: #b84a00;">
-    </label>
-
-    <label>
-      Payment Method
-      <select name="payment_method">
-        <option value="Cash">Cash</option>
-        <option value="Bank Transfer">Bank Transfer / NEFT</option>
-        <option value="UPI">UPI / GPay</option>
-        <option value="Credit">Supplier Credit (Pay Later)</option>
-      </select>
-    </label>
-
-    <label>
-      Reorder Alert Level (Sheets)
-      <input name="reorder_level" type="number" min="10" value="100" required>
-    </label>
-
-    <label style="grid-column: span 2;">
-      Notes / Remarks (optional)
-      <input name="notes" placeholder="e.g. 5 boxes delivered, batch #2">
-    </label>
-
-    <div class="align-end" style="grid-column: span 4;">
-      <button class="btn primary big" type="submit">+ Record Purchase / Stock</button>
+    <div style="display: flex; justify-content: flex-end; gap: 10px;">
+      <button type="button" class="btn secondary" onclick="resetPurchaseForm()">Reset</button>
+      <button type="submit" class="btn primary big" id="savePurchBtn" style="font-weight: 800; padding: 12px 24px;">
+        + Save Supplier Purchase Bill
+      </button>
     </div>
   </form>
 </section>
@@ -147,7 +162,7 @@
   <div class="section-title">
     <h2>Live Paper Stock Balance ({{ inventory|length }})</h2>
     {% if not is_admin %}
-      <span class="muted" style="font-size: 12px;">🔒 Deletion, cost valuation &amp; edits require <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
+      <span class="muted" style="font-size: 12px;">🔒 Manual adjustment requires <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
     {% endif %}
   </div>
   <div class="tablewrap">
@@ -213,13 +228,13 @@
           {% if is_admin %}
           <td>
             <div class="table-actions">
-              <button type="button" class="btn tiny secondary" onclick="openAdjustModal({{ item | tojson }})">Adjust</button>
-              <button type="button" class="btn tiny secondary" onclick="openEditModal({{ item | tojson }})">Edit</button>
-              <form method="post" style="display: inline;" onsubmit="return confirm('Permanently delete stock entry for \'{{ item.item_name|e }}\'?');">
-                <input type="hidden" name="action" value="delete">
-                <input type="hidden" name="item_id" value="{{ item.id }}">
-                <button class="btn tiny danger" type="submit">Delete</button>
-              </form>
+              <button type="button" class="btn tiny secondary" 
+                      data-item-id="{{ item.id }}" 
+                      data-item-name="{{ item.item_name|e }}" 
+                      data-avail="{{ item.available_sheets }}" 
+                      onclick="openAdjustModalFromBtn(this)">
+                Adjust Stock
+              </button>
             </div>
           </td>
           {% endif %}
@@ -248,7 +263,7 @@
   <!-- Filter bar for purchases -->
   <form method="get" class="searchbar" style="margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px;">
     <input name="p_bill" value="{{ p_bill }}" placeholder="Filter by invoice/bill #" style="flex: 1; min-width: 140px;">
-    <input name="p_biller" value="{{ p_biller }}" placeholder="Filter by biller/staff" style="flex: 1; min-width: 140px;">
+    <input name="p_biller" value="{{ p_biller }}" placeholder="Filter by supplier or biller" style="flex: 1; min-width: 140px;">
     <input type="date" name="p_date" value="{{ p_date }}" style="padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 8px;">
     <button class="btn primary">Filter</button>
     {% if p_bill or p_biller or p_date %}
@@ -264,9 +279,9 @@
           <th>Invoice #</th>
           <th>Supplier</th>
           <th>Biller</th>
-          <th>Item Purchased</th>
-          <th>Sheets</th>
-          <th>Total Cost</th>
+          <th>Items Included</th>
+          <th>Total Sheets</th>
+          <th>Total Amount</th>
           <th>Paid</th>
           <th>Balance Due</th>
           <th>Status</th>
@@ -287,7 +302,11 @@
           <td class="muted">{{ p.biller_name or 'Admin' }}</td>
           <td>
             <strong>{{ p.item_name }}</strong>
-            <span class="muted" style="display: block; font-size: 11px;">{{ p.bundles }} bundle(s) × {{ p.sheets_per_bundle }}</span>
+            {% if p['items'] and p['items']|length > 0 %}
+              <span class="muted" style="display: block; font-size: 11px;">
+                {{ p['items']|length }} item line(s)
+              </span>
+            {% endif %}
           </td>
           <td><strong>{{ p.total_sheets }}</strong></td>
           <td>{{ p.total_amount|inr }}</td>
@@ -305,12 +324,16 @@
             {% endif %}
           </td>
           <td style="text-align: right;">
-            <div style="display: inline-flex; gap: 4px; justify-content: flex-end;">
-              <button type="button" class="btn tiny secondary" onclick="viewSupplierPayments({{ p.id }}, '{{ p.bill_number|e }}', '{{ p.supplier_name|e }}')">Ledger</button>
+            <div style="display: inline-flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap;">
+              <button type="button" class="btn tiny secondary" onclick="viewPurchaseDetails({{ p.id }})">View</button>
               {% if is_admin and p.balance_amount > 0.001 %}
               <button type="button" class="btn tiny primary" onclick="openSupplierPayModal({{ p.id }}, '{{ p.bill_number|e }}', '{{ p.supplier_name|e }}', {{ p.total_amount }}, {{ p.paid_amount }}, {{ p.balance_amount }})" style="background: #16784b; border-color: #16784b;">
                 Pay ₹
               </button>
+              {% endif %}
+              {% if is_admin %}
+              <button type="button" class="btn tiny secondary" onclick="openEditPurchaseModal({{ p.id }})">Edit</button>
+              <button type="button" class="btn tiny danger" onclick="openDeletePurchaseModal({{ p.id }}, '{{ p.bill_number|e }}')">Delete</button>
               {% endif %}
             </div>
           </td>
@@ -321,10 +344,10 @@
   </div>
 </section>
 
-<!-- ── Stock Movement Audit Ledger ── -->
+<!-- ── Stock Movement & Adjustment Audit Ledger ── -->
 <section class="panel">
   <div class="section-title">
-    <h2>Recent Stock Movement Ledger (Audit Trail)</h2>
+    <h2>Recent Stock Movement &amp; Adjustment Ledger (Audit Trail)</h2>
   </div>
   <div class="tablewrap">
     <table>
@@ -332,28 +355,40 @@
         <tr>
           <th>Date / Time</th>
           <th>Paper Item</th>
-          <th>Type</th>
+          <th>Movement Type</th>
+          <th>Previous Balance</th>
           <th>Quantity Change</th>
-          <th>Balance After</th>
-          <th>Ref / Bill</th>
-          <th>Notes</th>
+          <th>New Balance</th>
+          <th>Ref / Bill #</th>
+          <th>Reason / Notes</th>
+          <th>User</th>
         </tr>
       </thead>
       <tbody>
         {% if not movements %}
         <tr>
-          <td colspan="7" class="muted" style="text-align: center; padding: 24px;">No stock movements recorded yet.</td>
+          <td colspan="9" class="muted" style="text-align: center; padding: 24px;">No stock movements recorded yet.</td>
         </tr>
         {% endif %}
         {% for m in movements %}
         <tr>
-          <td style="font-size: 11px; white-space: nowrap;">{{ m.created_at[:19].replace('T', ' ') }}</td>
+          <td style="font-size: 11px; white-space: nowrap;">
+            {{ m.movement_date or m.created_at[:10] }}<br>
+            <span class="muted">{{ m.created_at[11:19] }}</span>
+          </td>
           <td><strong>{{ m.item_name }}</strong></td>
           <td>
-            <span class="tile-badge {% if m.movement_type == 'PURCHASE' %}service{% elif m.movement_type == 'SALE' %}bw{% elif m.movement_type == 'DAMAGE' %}color{% else %}photo{% endif %}">
-              {{ m.movement_type }}
-            </span>
+            {% if m.movement_type in ('PURCHASE', 'PURCHASE_REVISE_ADD', 'MANUAL_ADD') %}
+              <span class="status-badge" style="background: #e8f5ee; color: #16784b; font-weight: 700;">{{ m.movement_type }}</span>
+            {% elif m.movement_type in ('SALE', 'PURCHASE_CANCEL', 'PURCHASE_REVISE_REVERSAL', 'MANUAL_REDUCE') %}
+              <span class="status-badge" style="background: #fde8e8; color: #c81e1e; font-weight: 700;">{{ m.movement_type }}</span>
+            {% elif m.movement_type == 'RETURN' %}
+              <span class="status-badge" style="background: #e0f2fe; color: #0369a1; font-weight: 700;">RETURN</span>
+            {% else %}
+              <span class="status-badge" style="background: #f3e8ff; color: #7e22ce; font-weight: 700;">{{ m.movement_type }}</span>
+            {% endif %}
           </td>
+          <td>{{ m.previous_balance if m.previous_balance is not none else '-' }}</td>
           <td style="font-weight: 700; color: {% if m.quantity < 0 %}#9a214b{% else %}var(--green){% endif %};">
             {% if m.quantity > 0 %}+{% endif %}{{ m.quantity }} sheets
           </td>
@@ -368,6 +403,7 @@
             {% endif %}
           </td>
           <td style="font-size: 11px; color: var(--muted);">{{ m.notes or '-' }}</td>
+          <td class="muted" style="font-size: 11px;">{{ m.recorded_by or 'Admin' }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -377,112 +413,244 @@
 
 {% if is_admin %}
 <!-- ── Manual Stock Adjustment Modal ── -->
-<div class="modal-backdrop" id="adjustModalBackdrop"></div>
-<div class="item-modal" id="adjustModal" role="dialog" aria-modal="true" style="padding-bottom: 24px;">
-  <div class="modal-drag-bar"></div>
-  <div class="modal-header">
-    <strong class="modal-title">Manual Stock Adjustment / Waste</strong>
-    <button class="modal-close" id="adjustModalClose" type="button" aria-label="Close">×</button>
+<div class="modal-backdrop" id="adjustModalBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="adjustModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:480px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800;">Manual Stock Adjustment</h3>
+    <button type="button" class="modal-close" onclick="closeAdjustModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
   </div>
-  <form method="post">
-    <input type="hidden" name="action" value="adjust">
-    <input type="hidden" name="item_id" id="adjItemId">
-    <div class="modal-fields">
+  
+  <p class="muted" style="font-size:12px; margin-bottom:14px;">
+    Use for physical stock counts, wastage, damages or non-purchase corrections.
+  </p>
+
+  <form id="adjustStockForm" onsubmit="submitStockAdjustment(event)">
+    <input type="hidden" id="adjItemId" name="item_id">
+    <input type="hidden" id="adjCurrentAvailVal">
+
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Paper Item</label>
+      <input id="adjItemName" readonly style="width:100%; padding:8px 12px; background:#f7f5f8; border:1.5px solid var(--line); border-radius:8px; font-weight:700; color:var(--ink);">
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
       <div>
-        <label>Paper Item</label>
-        <input id="adjItemName" readonly class="modal-rate-input" style="font-size: 14px; text-align: left; background: #f7f5f8;">
-      </div>
-      <div class="mf-row">
-        <div class="mf-group">
-          <label>Adjustment Type</label>
-          <select name="adj_type" class="cart-select" required>
-            <option value="DAMAGE">Damaged / Wasted Paper (-)</option>
-            <option value="COUNT_CORRECTION">Inventory Count Correction (+/-)</option>
-            <option value="RETURN">Customer Return (+)</option>
-          </select>
-        </div>
-        <div class="mf-group">
-          <label>Sheets Quantity</label>
-          <input name="sheets_change" type="number" required placeholder="e.g. -10 or 25" class="modal-rate-input" style="font-size: 15px; text-align: right;">
-        </div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Adjustment Type</label>
+        <select id="adjType" name="adj_type" onchange="calcAdjPreview()" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;">
+          <option value="ADD">Add Stock (+)</option>
+          <option value="REDUCE">Reduce Stock (-)</option>
+          <option value="SET">Set Correct Balance (=)</option>
+        </select>
       </div>
       <div>
-        <label>Reason / Reference</label>
-        <input name="reason" required placeholder="e.g. Printer paper jam wastage / recount" class="modal-rate-input" style="font-size: 14px; text-align: left;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;" id="adjQtyLabel">Quantity (Sheets)</label>
+        <input type="number" id="adjQty" name="quantity" min="1" required placeholder="e.g. 50" oninput="calcAdjPreview()" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; font-weight:800; text-align:right;">
       </div>
     </div>
-    <div class="modal-actions" style="margin-top: 16px;">
-      <button type="button" class="pos-btn secondary" id="adjustModalCancel">Cancel</button>
-      <button type="submit" class="pos-btn primary">Record Adjustment</button>
+
+    <!-- Live calculation preview banner -->
+    <div id="adjPreviewBanner" style="background:#eef7f2; border:1px solid #16784b30; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px; color:#16784b; font-weight:600;">
+      Current: 0 → Adjustment: 0 → <strong>New Balance: 0 sheets</strong>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Adjustment Date</label>
+        <input type="date" id="adjDate" name="adj_date" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Recorded By</label>
+        <input value="Admin" readonly style="width:100%; padding:8px; background:#f7f5f8; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reason / Description <span style="color:#c81e1e;">*</span></label>
+      <input id="adjReason" name="reason" required placeholder="e.g. Physical stock count audit / paper jam wastage" style="width:100%; padding:8px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closeAdjustModal()">Cancel</button>
+      <button type="submit" class="btn primary" id="adjSubmitBtn" style="background:var(--accent); border-color:var(--accent); font-weight:700;">Record Adjustment</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<!-- ── View Full Supplier Purchase Bill Modal ── -->
+<div class="modal-backdrop" id="viewPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="viewPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:680px; max-height:85vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800;">Supplier Invoice — <span id="vpBillNumber"></span></h3>
+    <button type="button" class="modal-close" onclick="closeViewPurchaseModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+  </div>
+  
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:16px; font-size:12px;">
+    <div><span class="muted">Supplier:</span> <strong id="vpSupplierName" style="display:block; color:var(--ink);"></strong></div>
+    <div><span class="muted">Purchase Date:</span> <strong id="vpDate" style="display:block; color:var(--ink);"></strong></div>
+    <div><span class="muted">Biller:</span> <strong id="vpBiller" style="display:block; color:var(--ink);"></strong></div>
+    <div><span class="muted">Status:</span> <span id="vpStatusBadge" style="display:inline-block; font-weight:800;"></span></div>
+  </div>
+
+  <div style="background:var(--soft); border-radius:10px; padding:10px 14px; margin-bottom:16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center;">
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Total Bill Amount</span><strong style="display:block; font-size:15px;" id="vpTotalAmount">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Paid to Supplier</span><strong style="display:block; font-size:15px; color:var(--green);" id="vpPaidAmount">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Balance Due</span><strong style="display:block; font-size:15px; color:#b84a00;" id="vpBalanceAmount">₹0.00</strong></div>
+  </div>
+
+  <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:var(--ink);">Purchased Paper Items</strong>
+  <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
+    <table style="width:100%; font-size:12px; margin:0;">
+      <thead>
+        <tr style="background:var(--soft);">
+          <th>Paper Item</th><th>Category</th><th>Size</th><th style="text-align:right;">Sheets</th><th style="text-align:right;">Unit Cost</th><th style="text-align:right;">Line Total</th>
+        </tr>
+      </thead>
+      <tbody id="vpItemsBody"></tbody>
+    </table>
+  </div>
+
+  <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:var(--ink);">Payment Transactions Ledger</strong>
+  <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
+    <table style="width:100%; font-size:12px; margin:0;">
+      <thead>
+        <tr style="background:var(--soft);">
+          <th>Date</th><th>Amount</th><th>Method</th><th>Recorded By</th><th>Notes</th>
+        </tr>
+      </thead>
+      <tbody id="vpPaymentsBody"></tbody>
+    </table>
+  </div>
+
+  <div id="vpAuditSection" style="display:none;">
+    <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:var(--ink);">Audit Log (Edits &amp; Adjustments)</strong>
+    <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
+      <table style="width:100%; font-size:11px; margin:0;">
+        <thead>
+          <tr style="background:var(--soft);"><th>Timestamp</th><th>Action</th><th>By</th><th>Details</th></tr>
+        </thead>
+        <tbody id="vpAuditBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div style="text-align:right;">
+    <button type="button" class="btn secondary" onclick="closeViewPurchaseModal()">Close</button>
+  </div>
+</div>
+
+{% if is_admin %}
+<!-- ── Edit Supplier Purchase Bill Modal (Admin) ── -->
+<div class="modal-backdrop" id="editPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="editPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:720px; max-height:85vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800;">Edit Supplier Purchase Bill</h3>
+    <button type="button" class="modal-close" onclick="closeEditPurchaseModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+  </div>
+  
+  <p class="muted" style="font-size:12px; margin-bottom:14px;">
+    Reverses original stock additions and applies corrected quantities. Changes automatically update Live Paper Stock Balance.
+  </p>
+
+  <form id="editPurchForm" onsubmit="submitEditPurchase(event)">
+    <input type="hidden" id="epPurchId">
+    
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-bottom:12px;">
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Supplier Name</label>
+        <input id="epSupplierName" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Invoice / Bill #</label>
+        <input id="epBillNumber" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Purchase Date</label>
+        <input type="date" id="epPurchaseDate" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Payment Method</label>
+        <select id="epPaymentMethod" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+          <option value="Cash">Cash</option>
+          <option value="Bank Transfer">Bank Transfer</option>
+          <option value="UPI">UPI / GPay</option>
+          <option value="Credit">Supplier Credit</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Items table in Edit Modal -->
+    <div style="margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <strong style="font-size:12px; text-transform:uppercase; color:var(--ink);">Included Paper Items</strong>
+        <button type="button" class="btn tiny secondary" onclick="addEditPurchaseRow()" style="font-weight:700;">+ Add Item</button>
+      </div>
+      <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px; max-height:220px; overflow-y:auto;">
+        <table style="width:100%; font-size:12px; margin:0;" id="epItemsTable">
+          <thead>
+            <tr style="background:var(--soft);">
+              <th>Paper Item</th><th>Category</th><th>Size</th><th style="text-align:right;">Sheets</th><th style="text-align:right;">Unit Price (₹)</th><th style="text-align:right;">Line Total (₹)</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="epItemsBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Edit Modal Calculations -->
+    <div style="background:#faf8fc; border:1.5px solid var(--line); border-radius:10px; padding:12px; margin-bottom:14px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; text-align:center;">
+      <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Total Purchase</span><strong style="display:block; font-size:15px;" id="epTotalDisplay">₹0.00</strong></div>
+      <div>
+        <span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Amount Paid</span>
+        <input type="number" step="0.01" min="0" id="epPaidAmount" oninput="calcEditSummary()" style="width:100%; max-width:110px; padding:4px 8px; font-weight:800; font-size:13px; text-align:center; border:1.5px solid var(--line); border-radius:6px; margin:0 auto;">
+      </div>
+      <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Balance</span><strong style="display:block; font-size:15px; color:#b84a00;" id="epBalanceDisplay">₹0.00</strong></div>
+      <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Status</span><span id="epStatusBadge" class="status-badge" style="font-weight:800;">PAID</span></div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Edit Notes / Reason</label>
+      <input id="epNotes" placeholder="Reason for correction" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closeEditPurchaseModal()">Cancel</button>
+      <button type="submit" class="btn primary" id="epSubmitBtn" style="font-weight:800;">Save Corrections</button>
     </div>
   </form>
 </div>
 
-<!-- ── Stock Edit Modal ── -->
-<div class="modal-backdrop" id="editModalBackdrop"></div>
-<div class="item-modal" id="editModal" role="dialog" aria-modal="true" style="padding-bottom: 24px;">
-  <div class="modal-drag-bar"></div>
-  <div class="modal-header">
-    <strong class="modal-title">Edit Stock Item</strong>
-    <button class="modal-close" id="editModalClose" type="button" aria-label="Close">×</button>
-  </div>
-  <form method="post" id="editStockForm">
-    <input type="hidden" name="action" value="update">
-    <input type="hidden" name="item_id" id="editItemId">
-    <div class="modal-fields">
-      <div class="mf-row">
-        <div class="mf-group">
-          <label>Category</label>
-          <select name="category" id="editCategory" class="cart-select" required>
-            <option value="Paper">Paper</option>
-            <option value="Lamination">Lamination Sheet</option>
-            <option value="Other">Other Material</option>
-          </select>
-        </div>
-        <div class="mf-group">
-          <label>Item Name</label>
-          <input name="item_name" id="editItemName" required class="modal-rate-input" style="font-size: 14px; text-align: left;">
-        </div>
-      </div>
-      <div class="mf-row">
-        <div class="mf-group">
-          <label>Size / Spec</label>
-          <input name="size_spec" id="editSizeSpec" class="modal-rate-input" style="font-size: 14px; text-align: left;">
-        </div>
-        <div class="mf-group">
-          <label>Available Sheets</label>
-          <input name="available_sheets" id="editAvailSheets" type="number" min="0" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
-        </div>
-      </div>
-      <div class="mf-row">
-        <div class="mf-group">
-          <label>Total Batch Cost (₹)</label>
-          <input name="cost" id="editCost" type="number" min="0" step="0.01" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
-        </div>
-        <div class="mf-group">
-          <label>Reorder Level (Sheets)</label>
-          <input name="reorder_level" id="editReorderLevel" type="number" min="10" required class="modal-rate-input" style="font-size: 14px; text-align: right;">
-        </div>
-      </div>
-      <div>
-        <label>Notes / Supplier</label>
-        <input name="notes" id="editNotes" class="modal-rate-input" style="font-size: 14px; text-align: left;">
-      </div>
+<!-- ── Delete Purchase Confirmation Modal (Admin) ── -->
+<div class="modal-backdrop" id="delPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="item-modal" id="delPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:440px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <h3 style="margin:0 0 10px; font-size:16px; color:#c81e1e; font-weight:800;">Delete / Cancel Purchase Bill</h3>
+  <p style="font-size:13px; color:var(--ink); margin-bottom:12px;">
+    Are you sure you want to delete purchase invoice <strong id="delPurchBillNo"></strong>?
+  </p>
+  <p class="muted" style="font-size:12px; margin-bottom:14px; background:#fff5f5; border:1px solid #fed7d7; padding:8px 10px; border-radius:8px;">
+    ⚠️ This will reverse all stock sheets added by this invoice and remove the supplier payable balance. This operation is blocked if any purchased stock was already consumed in billing.
+  </p>
+  
+  <form id="delPurchForm" onsubmit="submitDeletePurchase(event)">
+    <input type="hidden" id="delPurchId">
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Cancellation Reason <span style="color:#c81e1e;">*</span></label>
+      <input id="delPurchReason" required placeholder="e.g. Duplicate entry / Incorrect supplier invoice" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
     </div>
-    <div class="modal-actions" style="margin-top: 16px;">
-      <button type="button" class="pos-btn secondary" id="editModalCancel">Cancel</button>
-      <button type="submit" class="pos-btn primary">Save Changes</button>
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closeDeletePurchaseModal()">Cancel</button>
+      <button type="submit" class="btn danger" id="delPurchSubmitBtn" style="font-weight:700;">Delete &amp; Reverse Stock</button>
     </div>
   </form>
 </div>
 {% endif %}
 
 <!-- ── Pay Supplier Modal (Admin) ── -->
-<div class="modal-backdrop" id="supPayBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
+<div class="modal-backdrop" id="supPayBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
 <div class="item-modal" id="supPayModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:460px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
     <h3 style="margin:0; font-size:16px; font-weight:800;">Pay Supplier — <span id="supPayBillNo"></span></h3>
-    <button type="button" class="modal-close" onclick="closeSupplierPayModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
+    <button type="button" class="modal-close" onclick="closeSupplierPayModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
   </div>
   <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">Supplier: <strong id="supPaySupplier" style="color:var(--ink);"></strong></p>
   
@@ -524,98 +692,598 @@
   </form>
 </div>
 
-<!-- ── View Supplier Payment History Modal ── -->
-<div class="modal-backdrop" id="supLedgerBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="supLedgerModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:520px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
-    <h3 style="margin:0; font-size:16px; font-weight:800;">Supplier Payments — <span id="supLedgerBillNo"></span></h3>
-    <button type="button" class="modal-close" onclick="closeSupplierLedgerModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
-  </div>
-  <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">Supplier: <strong id="supLedgerSupplier" style="color:var(--ink);"></strong></p>
-  <div style="max-height:240px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
-    <table style="width:100%; font-size:12px; margin:0;">
-      <thead>
-        <tr style="background:var(--soft);">
-          <th>Date</th><th>Amount</th><th>Method</th><th>Recorded By</th>
-        </tr>
-      </thead>
-      <tbody id="supLedgerBody"></tbody>
-    </table>
-  </div>
-  <div style="text-align:right;">
-    <button type="button" class="btn secondary" onclick="closeSupplierLedgerModal()">Close</button>
-  </div>
-</div>
-
 <script>
-function calcTotalSheets() {
-  const b = parseInt(document.getElementById('bundlesInput').value) || 0;
-  const s = parseInt(document.getElementById('sheetsPerBundleInput').value) || 0;
-  document.getElementById('totalSheetsDisplay').value = (b * s) + " sheets";
-}
-
-function updatePresets(cat) {
-  const list = document.getElementById('itemPresets');
-  const size = document.getElementById('sizeInput');
-  const sheets = document.getElementById('sheetsPerBundleInput');
-  if (cat === 'Lamination') {
-    list.innerHTML = `
-      <option value="A4 Lamination 175 Microns">
-      <option value="A4 Lamination 125 Microns">
-      <option value="Lamination Pouch A4">
-      <option value="Lamination Pouch Legal">
-      <option value="Lamination Pouch A3">
-      <option value="ID Card Lamination Pouch">
-      <option value="RC Book Lamination Pouch">
-    `;
-    size.value = 'A4';
-    sheets.value = '100';
-  } else if (cat === 'Paper') {
-    list.innerHTML = `
-      <option value="A4 75 GSM (JK Copier)">
-      <option value="Legal Paper 75 GSM">
-      <option value="A3 Paper 75 GSM">
-      <option value="A4 Photo Paper 130 GSM">
-      <option value="A4 Photo Paper 220 GSM">
-      <option value="A3 Photo Paper 220 GSM">
-      <option value="Laser 12x18 130 GSM">
-      <option value="Laser 12x18 220 GSM">
-      <option value="Laser 12x18 Waterproof">
-      <option value="Laser 12x18 Sticker Sheet">
-      <option value="Laser 12x18 Sticker Waterproof">
-    `;
-    size.value = 'A4';
-    sheets.value = '500';
-  } else {
-    list.innerHTML = '';
-    size.value = '-';
-    sheets.value = '100';
+// ── Initialize Default Date ──
+document.addEventListener('DOMContentLoaded', () => {
+  const today = new Date().toISOString().slice(0, 10);
+  if (document.getElementById('pPurchaseDate')) {
+    document.getElementById('pPurchaseDate').value = today;
   }
-  calcTotalSheets();
+  // Initialize with 1 default row
+  if (document.getElementById('purchItemsBody') && document.getElementById('purchItemsBody').children.length === 0) {
+    addPurchaseRow('A4 75 GSM (JK Copier)', 'Paper', 'A4', 5000, 0.50);
+  }
+});
+
+// ── Multi-Item Purchase Bill Logic ──
+let rowCounter = 0;
+
+function addPurchaseRow(name='', category='Paper', size='A4', qty=500, unitCost=0.50) {
+  rowCounter++;
+  const tbody = document.getElementById('purchItemsBody');
+  const tr = document.createElement('tr');
+  tr.id = `purchRow_${rowCounter}`;
+  
+  tr.innerHTML = `
+    <td>
+      <input type="text" class="p-row-name" list="inventoryPresets" value="${name}" placeholder="Type or select paper" required oninput="onItemNameChange(this)" style="width: 100%; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 6px; font-size: 13px;">
+    </td>
+    <td>
+      <select class="p-row-cat" style="width: 100%; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 6px; font-size: 12px;">
+        <option value="Paper" ${category==='Paper'?'selected':''}>Paper</option>
+        <option value="Lamination" ${category==='Lamination'?'selected':''}>Lamination</option>
+        <option value="Other" ${category==='Other'?'selected':''}>Other</option>
+      </select>
+    </td>
+    <td>
+      <input type="text" class="p-row-size" value="${size}" placeholder="e.g. A4" style="width: 100%; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 6px; font-size: 12px;">
+    </td>
+    <td>
+      <input type="number" class="p-row-qty" min="1" value="${qty}" required oninput="calcRowTotal(this)" style="width: 100%; text-align: right; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 6px; font-weight: 700; font-size: 13px;">
+    </td>
+    <td>
+      <input type="number" step="0.001" min="0" class="p-row-cost" value="${unitCost}" required oninput="calcRowTotal(this)" style="width: 100%; text-align: right; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 6px; font-size: 13px;">
+    </td>
+    <td style="text-align: right; font-weight: 800; color: var(--ink);">
+      <span class="p-row-total">₹${(qty * unitCost).toFixed(2)}</span>
+    </td>
+    <td style="text-align: center;">
+      <button type="button" onclick="removePurchaseRow('${tr.id}')" style="border: none; background: none; color: #c81e1e; font-size: 16px; cursor: pointer;" title="Remove row">✕</button>
+    </td>
+  `;
+  tbody.appendChild(tr);
+  calcPurchaseSummary();
 }
-calcTotalSheets();
 
-// Modal Functions (Admin)
-function calcPurchBalance() {
-  const tot = parseFloat(document.getElementById('purchTotalAmount').value) || 0;
-  const pd = parseFloat(document.getElementById('purchPaidAmount').value) || 0;
-  const bal = Math.max(0, tot - pd);
-  document.getElementById('purchBalanceDisplay').value = '₹' + bal.toFixed(2);
+function removePurchaseRow(rowId) {
+  const tbody = document.getElementById('purchItemsBody');
+  if (tbody.children.length <= 1) {
+    alert("Purchase bill must contain at least one paper item.");
+    return;
+  }
+  const el = document.getElementById(rowId);
+  if (el) el.remove();
+  calcPurchaseSummary();
 }
-calcPurchBalance();
 
-// Supplier Payment Modal
-let currentPurchForPay = null;
+function onItemNameChange(input) {
+  const row = input.closest('tr');
+  const val = input.value.trim().toLowerCase();
+  const opts = document.querySelectorAll('#inventoryPresets option');
+  for (let opt of opts) {
+    if (opt.value.trim().toLowerCase() === val) {
+      if (opt.dataset.cat) row.querySelector('.p-row-cat').value = opt.dataset.cat;
+      if (opt.dataset.size) row.querySelector('.p-row-size').value = opt.dataset.size;
+      break;
+    }
+  }
+}
 
+function calcRowTotal(input) {
+  const row = input.closest('tr');
+  const qty = parseInt(row.querySelector('.p-row-qty').value) || 0;
+  const cost = parseFloat(row.querySelector('.p-row-cost').value) || 0;
+  const lineTot = qty * cost;
+  row.querySelector('.p-row-total').textContent = '₹' + lineTot.toFixed(2);
+  calcPurchaseSummary();
+}
+
+function calcPurchaseSummary() {
+  const rows = document.querySelectorAll('#purchItemsBody tr');
+  let totalSheets = 0;
+  let totalAmount = 0;
+  let itemsCount = 0;
+
+  rows.forEach(r => {
+    const qty = parseInt(r.querySelector('.p-row-qty').value) || 0;
+    const cost = parseFloat(r.querySelector('.p-row-cost').value) || 0;
+    if (qty > 0) {
+      itemsCount++;
+      totalSheets += qty;
+      totalAmount += (qty * cost);
+    }
+  });
+
+  const paidInput = document.getElementById('purchPaidAmount');
+  const paid = parseFloat(paidInput.value) || 0;
+  const balance = Math.max(0, totalAmount - paid);
+
+  document.getElementById('purchSummaryCounts').textContent = `${itemsCount} item(s) · ${totalSheets.toLocaleString()} sheets`;
+  document.getElementById('purchTotalDisplay').textContent = '₹' + totalAmount.toFixed(2);
+  document.getElementById('purchBalanceDisplay').textContent = '₹' + balance.toFixed(2);
+
+  const badge = document.getElementById('purchStatusBadge');
+  if (totalAmount > 0 && paid >= totalAmount - 0.001) {
+    badge.textContent = '✔ PAID';
+    badge.style.background = '#e8f5ee';
+    badge.style.color = '#16784b';
+  } else if (paid <= 0.001) {
+    badge.textContent = '✕ UNPAID';
+    badge.style.background = '#fde8e8';
+    badge.style.color = '#c81e1e';
+  } else {
+    badge.textContent = '⏳ PARTIAL';
+    badge.style.background = '#fef08a';
+    badge.style.color = '#854d0e';
+  }
+}
+
+function resetPurchaseForm() {
+  document.getElementById('multiPurchaseForm').reset();
+  document.getElementById('purchItemsBody').innerHTML = '';
+  document.getElementById('pPurchaseDate').value = new Date().toISOString().slice(0, 10);
+  addPurchaseRow('A4 75 GSM (JK Copier)', 'Paper', 'A4', 5000, 0.50);
+}
+
+async function submitMultiPurchase(e) {
+  e.preventDefault();
+  const supplier_name = document.getElementById('pSupplierName').value.trim();
+  const bill_number = document.getElementById('pBillNumber').value.trim();
+  const purchase_date = document.getElementById('pPurchaseDate').value;
+  const biller_name = document.getElementById('pBillerName').value.trim();
+  const payment_method = document.getElementById('pPaymentMethod').value;
+  const paid_amount = parseFloat(document.getElementById('purchPaidAmount').value) || 0;
+  const notes = document.getElementById('pNotes').value.trim();
+
+  const rows = document.querySelectorAll('#purchItemsBody tr');
+  const items = [];
+  rows.forEach(r => {
+    const item_name = r.querySelector('.p-row-name').value.trim();
+    const category = r.querySelector('.p-row-cat').value;
+    const size_spec = r.querySelector('.p-row-size').value.trim();
+    const quantity = parseInt(r.querySelector('.p-row-qty').value) || 0;
+    const unit_cost = parseFloat(r.querySelector('.p-row-cost').value) || 0;
+    if (item_name && quantity > 0) {
+      items.push({ item_name, category, size_spec, quantity, unit_cost });
+    }
+  });
+
+  if (items.length === 0) {
+    alert("Please add at least one valid paper item with name and quantity.");
+    return;
+  }
+
+  const btn = document.getElementById('savePurchBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving Purchase Bill…';
+
+  try {
+    const res = await fetch('/api/purchases/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        supplier_name, bill_number, purchase_date, biller_name, payment_method, paid_amount, notes, items
+      })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save purchase bill');
+    alert(`✓ Supplier invoice ${data.bill_number} saved successfully with ${items.length} items!`);
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = '+ Save Supplier Purchase Bill';
+  }
+}
+
+// ── Manual Stock Adjustment Modal ──
+function openAdjustModalFromBtn(btn) {
+  const id = btn.getAttribute('data-item-id');
+  const name = btn.getAttribute('data-item-name');
+  const avail = parseInt(btn.getAttribute('data-avail')) || 0;
+
+  document.getElementById('adjItemId').value = id;
+  document.getElementById('adjItemName').value = name;
+  document.getElementById('adjCurrentAvailVal').value = avail;
+  document.getElementById('adjQty').value = '';
+  document.getElementById('adjType').value = 'ADD';
+  document.getElementById('adjDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('adjReason').value = '';
+  calcAdjPreview();
+
+  document.getElementById('adjustModal').style.display = 'block';
+  document.getElementById('adjustModalBackdrop').style.display = 'block';
+}
+
+function closeAdjustModal() {
+  document.getElementById('adjustModal').style.display = 'none';
+  document.getElementById('adjustModalBackdrop').style.display = 'none';
+}
+
+function calcAdjPreview() {
+  const cur = parseInt(document.getElementById('adjCurrentAvailVal').value) || 0;
+  const type = document.getElementById('adjType').value;
+  const qty = parseInt(document.getElementById('adjQty').value) || 0;
+  const banner = document.getElementById('adjPreviewBanner');
+  let newBal = cur;
+  let changeStr = "+0";
+
+  if (type === 'ADD') {
+    newBal = cur + qty;
+    changeStr = `+${qty}`;
+    banner.style.background = '#eef7f2';
+    banner.style.color = '#16784b';
+  } else if (type === 'REDUCE') {
+    newBal = Math.max(0, cur - qty);
+    changeStr = `-${qty}`;
+    banner.style.background = '#fef2f2';
+    banner.style.color = '#9a214b';
+  } else if (type === 'SET') {
+    newBal = qty;
+    const diff = qty - cur;
+    changeStr = (diff >= 0 ? '+' : '') + diff;
+    banner.style.background = '#f0f9ff';
+    banner.style.color = '#0369a1';
+  }
+
+  banner.innerHTML = `Current: <strong>${cur.toLocaleString()}</strong> → Change: <strong>${changeStr}</strong> → New Balance: <strong>${newBal.toLocaleString()} sheets</strong>`;
+}
+
+async function submitStockAdjustment(e) {
+  e.preventDefault();
+  const item_id = document.getElementById('adjItemId').value;
+  const adj_type = document.getElementById('adjType').value;
+  const quantity = parseInt(document.getElementById('adjQty').value);
+  const adj_date = document.getElementById('adjDate').value;
+  const reason = document.getElementById('adjReason').value.trim();
+
+  if (isNaN(quantity) || quantity <= 0 && adj_type !== 'SET') {
+    alert("Please enter a valid positive quantity.");
+    return;
+  }
+  if (!reason) {
+    alert("Please enter a reason for this adjustment.");
+    return;
+  }
+
+  const btn = document.getElementById('adjSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    const res = await fetch('/api/inventory/adjust', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id, adj_type, quantity, adj_date, reason })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to adjust stock');
+    alert(data.message || 'Stock successfully adjusted!');
+    closeAdjustModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Record Adjustment';
+  }
+}
+
+// ── View Full Purchase Bill Modal ──
+async function viewPurchaseDetails(purchId) {
+  try {
+    const res = await fetch(`/api/purchases/${purchId}/details`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to load purchase details');
+
+    const p = data.purchase;
+    document.getElementById('vpBillNumber').textContent = p.bill_number || 'N/A';
+    document.getElementById('vpSupplierName').textContent = p.supplier_name || '-';
+    document.getElementById('vpDate').textContent = p.purchase_date || '-';
+    document.getElementById('vpBiller').textContent = p.biller_name || 'Admin';
+    document.getElementById('vpTotalAmount').textContent = '₹' + Number(p.total_amount).toFixed(2);
+    document.getElementById('vpPaidAmount').textContent = '₹' + Number(p.paid_amount).toFixed(2);
+    document.getElementById('vpBalanceAmount').textContent = '₹' + Number(p.balance_amount).toFixed(2);
+
+    const st = document.getElementById('vpStatusBadge');
+    st.textContent = p.payment_status.toUpperCase();
+    st.className = 'status-badge';
+    if (p.payment_status === 'Paid') {
+      st.style.background = '#e8f5ee'; st.style.color = '#16784b';
+    } else if (p.payment_status === 'Unpaid') {
+      st.style.background = '#fde8e8'; st.style.color = '#c81e1e';
+    } else {
+      st.style.background = '#fef08a'; st.style.color = '#854d0e';
+    }
+
+    // Items table
+    const itemsBody = document.getElementById('vpItemsBody');
+    itemsBody.innerHTML = '';
+    (data.items || []).forEach(it => {
+      itemsBody.innerHTML += `<tr>
+        <td><strong>${it.item_name}</strong></td>
+        <td>${it.category}</td>
+        <td>${it.size_spec || '-'}</td>
+        <td style="text-align:right;"><strong>${it.quantity.toLocaleString()}</strong></td>
+        <td style="text-align:right;">₹${Number(it.unit_cost).toFixed(3)}</td>
+        <td style="text-align:right; font-weight:800;">₹${Number(it.line_total).toFixed(2)}</td>
+      </tr>`;
+    });
+
+    // Payments table
+    const pmBody = document.getElementById('vpPaymentsBody');
+    pmBody.innerHTML = '';
+    if (data.payments && data.payments.length > 0) {
+      data.payments.forEach(pm => {
+        pmBody.innerHTML += `<tr>
+          <td>${pm.payment_date || pm.created_at.slice(0, 10)}</td>
+          <td style="color:var(--green); font-weight:800;">₹${Number(pm.amount).toFixed(2)}</td>
+          <td>${pm.payment_method}</td>
+          <td>${pm.recorded_by || 'Admin'}</td>
+          <td class="muted">${pm.notes || '-'}</td>
+        </tr>`;
+      });
+    } else {
+      pmBody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;">No payment transactions recorded.</td></tr>';
+    }
+
+    // Audit logs
+    const auditSec = document.getElementById('vpAuditSection');
+    const auditBody = document.getElementById('vpAuditBody');
+    auditBody.innerHTML = '';
+    if (data.audit_logs && data.audit_logs.length > 0) {
+      auditSec.style.display = 'block';
+      data.audit_logs.forEach(al => {
+        auditBody.innerHTML += `<tr>
+          <td style="white-space:nowrap;">${al.created_at.replace('T', ' ')}</td>
+          <td><strong>${al.action}</strong></td>
+          <td>${al.performed_by}</td>
+          <td>${al.details}</td>
+        </tr>`;
+      });
+    } else {
+      auditSec.style.display = 'none';
+    }
+
+    document.getElementById('viewPurchModal').style.display = 'block';
+    document.getElementById('viewPurchBackdrop').style.display = 'block';
+  } catch (err) {
+    alert("Error loading details: " + err.message);
+  }
+}
+
+function closeViewPurchaseModal() {
+  document.getElementById('viewPurchModal').style.display = 'none';
+  document.getElementById('viewPurchBackdrop').style.display = 'none';
+}
+
+// ── Edit Supplier Purchase Bill Modal ──
+let epRowCounter = 0;
+
+async function openEditPurchaseModal(purchId) {
+  try {
+    const res = await fetch(`/api/purchases/${purchId}/details`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to load purchase details');
+
+    const p = data.purchase;
+    document.getElementById('epPurchId').value = p.id;
+    document.getElementById('epSupplierName').value = p.supplier_name || '';
+    document.getElementById('epBillNumber').value = p.bill_number || '';
+    document.getElementById('epPurchaseDate').value = p.purchase_date || '';
+    document.getElementById('epNotes').value = p.notes || '';
+    document.getElementById('epPaidAmount').value = Number(p.paid_amount).toFixed(2);
+
+    const tbody = document.getElementById('epItemsBody');
+    tbody.innerHTML = '';
+    epRowCounter = 0;
+
+    (data.items || []).forEach(it => {
+      addEditPurchaseRow(it.item_name, it.category, it.size_spec, it.quantity, it.unit_cost);
+    });
+
+    if (tbody.children.length === 0) {
+      addEditPurchaseRow('A4 75 GSM (JK Copier)', 'Paper', 'A4', 500, 0.50);
+    }
+
+    calcEditSummary();
+    document.getElementById('editPurchModal').style.display = 'block';
+    document.getElementById('editPurchBackdrop').style.display = 'block';
+  } catch (err) {
+    alert("Error opening edit modal: " + err.message);
+  }
+}
+
+function closeEditPurchaseModal() {
+  document.getElementById('editPurchModal').style.display = 'none';
+  document.getElementById('editPurchBackdrop').style.display = 'none';
+}
+
+function addEditPurchaseRow(name='', category='Paper', size='A4', qty=500, unitCost=0.50) {
+  epRowCounter++;
+  const tbody = document.getElementById('epItemsBody');
+  const tr = document.createElement('tr');
+  tr.id = `epRow_${epRowCounter}`;
+  tr.innerHTML = `
+    <td>
+      <input type="text" class="ep-row-name" list="inventoryPresets" value="${name}" required oninput="calcEditRowTotal(this)" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+    </td>
+    <td>
+      <select class="ep-row-cat" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:11px;">
+        <option value="Paper" ${category==='Paper'?'selected':''}>Paper</option>
+        <option value="Lamination" ${category==='Lamination'?'selected':''}>Lamination</option>
+        <option value="Other" ${category==='Other'?'selected':''}>Other</option>
+      </select>
+    </td>
+    <td>
+      <input type="text" class="ep-row-size" value="${size}" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:11px;">
+    </td>
+    <td>
+      <input type="number" class="ep-row-qty" min="1" value="${qty}" required oninput="calcEditRowTotal(this)" style="width:100%; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-weight:700; font-size:12px;">
+    </td>
+    <td>
+      <input type="number" step="0.001" min="0" class="ep-row-cost" value="${unitCost}" required oninput="calcEditRowTotal(this)" style="width:100%; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+    </td>
+    <td style="text-align:right; font-weight:800; font-size:12px;">
+      <span class="ep-row-total">₹${(qty * unitCost).toFixed(2)}</span>
+    </td>
+    <td style="text-align:center;">
+      <button type="button" onclick="removeEditPurchaseRow('${tr.id}')" style="border:none; background:none; color:#c81e1e; font-size:14px; cursor:pointer;">✕</button>
+    </td>
+  `;
+  tbody.appendChild(tr);
+  calcEditSummary();
+}
+
+function removeEditPurchaseRow(rowId) {
+  const tbody = document.getElementById('epItemsBody');
+  if (tbody.children.length <= 1) {
+    alert("Must contain at least one item.");
+    return;
+  }
+  const el = document.getElementById(rowId);
+  if (el) el.remove();
+  calcEditSummary();
+}
+
+function calcEditRowTotal(input) {
+  const row = input.closest('tr');
+  const qty = parseInt(row.querySelector('.ep-row-qty').value) || 0;
+  const cost = parseFloat(row.querySelector('.ep-row-cost').value) || 0;
+  row.querySelector('.ep-row-total').textContent = '₹' + (qty * cost).toFixed(2);
+  calcEditSummary();
+}
+
+function calcEditSummary() {
+  const rows = document.querySelectorAll('#epItemsBody tr');
+  let total = 0;
+  rows.forEach(r => {
+    const qty = parseInt(r.querySelector('.ep-row-qty').value) || 0;
+    const cost = parseFloat(r.querySelector('.ep-row-cost').value) || 0;
+    total += (qty * cost);
+  });
+  const paid = parseFloat(document.getElementById('epPaidAmount').value) || 0;
+  const bal = Math.max(0, total - paid);
+
+  document.getElementById('epTotalDisplay').textContent = '₹' + total.toFixed(2);
+  document.getElementById('epBalanceDisplay').textContent = '₹' + bal.toFixed(2);
+
+  const badge = document.getElementById('epStatusBadge');
+  if (total > 0 && paid >= total - 0.001) {
+    badge.textContent = 'PAID';
+    badge.style.background = '#e8f5ee'; badge.style.color = '#16784b';
+  } else if (paid <= 0.001) {
+    badge.textContent = 'UNPAID';
+    badge.style.background = '#fde8e8'; badge.style.color = '#c81e1e';
+  } else {
+    badge.textContent = 'PARTIAL';
+    badge.style.background = '#fef08a'; badge.style.color = '#854d0e';
+  }
+}
+
+async function submitEditPurchase(e) {
+  e.preventDefault();
+  const id = document.getElementById('epPurchId').value;
+  const supplier_name = document.getElementById('epSupplierName').value.trim();
+  const bill_number = document.getElementById('epBillNumber').value.trim();
+  const purchase_date = document.getElementById('epPurchaseDate').value;
+  const payment_method = document.getElementById('epPaymentMethod').value;
+  const paid_amount = parseFloat(document.getElementById('epPaidAmount').value) || 0;
+  const notes = document.getElementById('epNotes').value.trim();
+
+  const rows = document.querySelectorAll('#epItemsBody tr');
+  const items = [];
+  rows.forEach(r => {
+    const item_name = r.querySelector('.ep-row-name').value.trim();
+    const category = r.querySelector('.ep-row-cat').value;
+    const size_spec = r.querySelector('.ep-row-size').value.trim();
+    const quantity = parseInt(r.querySelector('.ep-row-qty').value) || 0;
+    const unit_cost = parseFloat(r.querySelector('.ep-row-cost').value) || 0;
+    if (item_name && quantity > 0) {
+      items.push({ item_name, category, size_spec, quantity, unit_cost });
+    }
+  });
+
+  if (items.length === 0) {
+    alert("Please add at least one valid item.");
+    return;
+  }
+
+  const btn = document.getElementById('epSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Reconciling Stock…';
+
+  try {
+    const res = await fetch(`/api/purchases/${id}/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supplier_name, bill_number, purchase_date, payment_method, paid_amount, notes, items })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to edit purchase bill');
+    alert(data.message || 'Purchase bill successfully updated!');
+    closeEditPurchaseModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Warning / Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Save Corrections';
+  }
+}
+
+// ── Delete Supplier Purchase Modal ──
+function openDeletePurchaseModal(id, billNo) {
+  document.getElementById('delPurchId').value = id;
+  document.getElementById('delPurchBillNo').textContent = billNo;
+  document.getElementById('delPurchReason').value = '';
+  document.getElementById('delPurchModal').style.display = 'block';
+  document.getElementById('delPurchBackdrop').style.display = 'block';
+}
+
+function closeDeletePurchaseModal() {
+  document.getElementById('delPurchModal').style.display = 'none';
+  document.getElementById('delPurchBackdrop').style.display = 'none';
+}
+
+async function submitDeletePurchase(e) {
+  e.preventDefault();
+  const id = document.getElementById('delPurchId').value;
+  const reason = document.getElementById('delPurchReason').value.trim();
+  if (!reason) {
+    alert("Please provide a cancellation reason.");
+    return;
+  }
+
+  const btn = document.getElementById('delPurchSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking stock & reversing…';
+
+  try {
+    const res = await fetch(`/api/purchases/${id}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to delete purchase');
+    alert(data.message || 'Purchase bill successfully deleted and stock reversed!');
+    closeDeletePurchaseModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Warning / Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Delete & Reverse Stock';
+  }
+}
+
+// ── Pay Supplier Modal ──
 function openSupplierPayModal(id, billNo, supplier, total, paid, balance) {
-  currentPurchForPay = { id, billNo, supplier, total, paid, balance };
   document.getElementById('supPayId').value = id;
   document.getElementById('supPayBillNo').textContent = billNo;
   document.getElementById('supPaySupplier').textContent = supplier;
-  document.getElementById('supPayTotal').textContent = '₹' + total.toFixed(2);
-  document.getElementById('supPayPaid').textContent = '₹' + paid.toFixed(2);
-  document.getElementById('supPayBal').textContent = '₹' + balance.toFixed(2);
-  document.getElementById('supPayAmount').value = balance.toFixed(2);
+  document.getElementById('supPayTotal').textContent = '₹' + Number(total).toFixed(2);
+  document.getElementById('supPayPaid').textContent = '₹' + Number(paid).toFixed(2);
+  document.getElementById('supPayBal').textContent = '₹' + Number(balance).toFixed(2);
+  document.getElementById('supPayAmount').value = Number(balance).toFixed(2);
   document.getElementById('supPayAmount').max = balance;
   document.getElementById('supPayDate').value = new Date().toISOString().slice(0, 10);
   document.getElementById('supPayModal').style.display = 'block';
@@ -659,85 +1327,6 @@ async function submitSupplierPayment(e) {
     btn.disabled = false;
     btn.textContent = 'Save Payment';
   }
-}
-
-// Supplier Payments History Modal
-function viewSupplierPayments(id, billNo, supplier) {
-  document.getElementById('supLedgerBillNo').textContent = billNo;
-  document.getElementById('supLedgerSupplier').textContent = supplier;
-  const body = document.getElementById('supLedgerBody');
-  body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">Loading...</td></tr>';
-  document.getElementById('supLedgerModal').style.display = 'block';
-  document.getElementById('supLedgerBackdrop').style.display = 'block';
-
-  fetch(`/api/purchases/${id}/payments`)
-    .then(r => r.json())
-    .then(data => {
-      if (data.success && data.payments && data.payments.length > 0) {
-        let html = '';
-        data.payments.forEach(p => {
-          html += `<tr>
-            <td>${p.payment_date || p.created_at.slice(0, 10)}</td>
-            <td><strong>₹${Number(p.amount).toFixed(2)}</strong></td>
-            <td>${p.payment_method}</td>
-            <td class="muted">${p.recorded_by} ${p.notes ? '— ' + p.notes : ''}</td>
-          </tr>`;
-        });
-        body.innerHTML = html;
-      } else {
-        body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">No payment records found.</td></tr>';
-      }
-    })
-    .catch(() => {
-      body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">Failed to load payments.</td></tr>';
-    });
-}
-
-function closeSupplierLedgerModal() {
-  document.getElementById('supLedgerModal').style.display = 'none';
-  document.getElementById('supLedgerBackdrop').style.display = 'none';
-}
-
-function openAdjustModal(item) {
-  document.getElementById('adjItemId').value = item.id;
-  document.getElementById('adjItemName').value = item.item_name + ' (Current: ' + item.available_sheets + ' sheets)';
-  document.getElementById('adjustModal').classList.add('open');
-  document.getElementById('adjustModalBackdrop').classList.add('open');
-}
-function closeAdjustModal() {
-  const m = document.getElementById('adjustModal');
-  const b = document.getElementById('adjustModalBackdrop');
-  if (m) m.classList.remove('open');
-  if (b) b.classList.remove('open');
-}
-if (document.getElementById('adjustModalClose')) {
-  document.getElementById('adjustModalClose').addEventListener('click', closeAdjustModal);
-  document.getElementById('adjustModalCancel').addEventListener('click', closeAdjustModal);
-  document.getElementById('adjustModalBackdrop').addEventListener('click', closeAdjustModal);
-}
-
-function openEditModal(item) {
-  document.getElementById('editItemId').value = item.id;
-  document.getElementById('editCategory').value = item.category;
-  document.getElementById('editItemName').value = item.item_name;
-  document.getElementById('editSizeSpec').value = item.size_spec || '';
-  document.getElementById('editAvailSheets').value = item.available_sheets !== undefined ? item.available_sheets : item.total_sheets;
-  document.getElementById('editCost').value = item.cost;
-  document.getElementById('editReorderLevel').value = item.reorder_level || 100;
-  document.getElementById('editNotes').value = item.notes || '';
-  document.getElementById('editModal').classList.add('open');
-  document.getElementById('editModalBackdrop').classList.add('open');
-}
-function closeEditModal() {
-  const m = document.getElementById('editModal');
-  const b = document.getElementById('editModalBackdrop');
-  if (m) m.classList.remove('open');
-  if (b) b.classList.remove('open');
-}
-if (document.getElementById('editModalClose')) {
-  document.getElementById('editModalClose').addEventListener('click', closeEditModal);
-  document.getElementById('editModalCancel').addEventListener('click', closeEditModal);
-  document.getElementById('editModalBackdrop').addEventListener('click', closeEditModal);
 }
 </script>
 {% endblock %}

@@ -201,6 +201,46 @@ def init_db():
                     notes TEXT DEFAULT '',
                     created_at TEXT NOT NULL
                 );
+
+                -- Migrations for Multi-Item Purchases, Audit Log & Stock Movement Tracking
+                ALTER TABLE purchases ADD COLUMN IF NOT EXISTS is_deleted INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE purchases ALTER COLUMN item_name DROP NOT NULL;
+
+                CREATE TABLE IF NOT EXISTS purchase_items (
+                    id SERIAL PRIMARY KEY,
+                    purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+                    item_id INTEGER REFERENCES inventory(id) ON DELETE SET NULL,
+                    item_name TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'Paper',
+                    size_spec TEXT DEFAULT '',
+                    quantity INTEGER NOT NULL,
+                    unit_cost REAL NOT NULL DEFAULT 0,
+                    line_total REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS purchase_audit_log (
+                    id SERIAL PRIMARY KEY,
+                    purchase_id INTEGER NOT NULL,
+                    bill_number TEXT NOT NULL DEFAULT '',
+                    action TEXT NOT NULL,
+                    performed_by TEXT NOT NULL DEFAULT 'Admin',
+                    details TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS previous_balance INTEGER;
+                ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS recorded_by TEXT DEFAULT 'Admin';
+                ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS movement_date TEXT DEFAULT '';
+
+                -- Backfill purchase_items from existing purchases if not already backfilled
+                INSERT INTO purchase_items (purchase_id, item_id, item_name, category, quantity, unit_cost, line_total, created_at)
+                SELECT p.id, p.item_id, p.item_name, p.category, p.total_sheets, 
+                       CASE WHEN p.total_sheets > 0 THEN (p.total_amount::numeric / p.total_sheets)::real ELSE 0 END, 
+                       p.total_amount, p.created_at
+                FROM purchases p
+                WHERE p.item_name IS NOT NULL AND p.item_name != ''
+                  AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.id);
                 """)
 
                 # Seed essential paper stock if empty
@@ -265,97 +305,431 @@ def logout():
 def install_page():
     return render_template("install.html")
 
+# ── Paper & Stock Inventory Helper Functions ──
+
+def process_create_purchase(cur, data, is_admin, biller_default="Staff"):
+    now = datetime.now().isoformat(timespec="seconds")
+    supplier_name = (data.get("supplier_name") or "").strip()
+    bill_number = (data.get("bill_number") or "").strip()
+    purchase_date = data.get("purchase_date") or date.today().isoformat()
+    biller_name = (data.get("biller_name") or "").strip() or biller_default
+    payment_method = (data.get("payment_method") or "Cash").strip()
+    notes = (data.get("notes") or "").strip()
+    raw_items = data.get("items") or []
+
+    if not raw_items:
+        raise ValueError("Purchase must contain at least one paper item.")
+
+    parsed_items = []
+    total_amount = 0.0
+    total_sheets = 0
+    for it in raw_items:
+        i_name = (it.get("item_name") or "").strip()
+        if not i_name:
+            continue
+        cat = (it.get("category") or "Paper").strip()
+        size = (it.get("size_spec") or "A4").strip()
+        qty = max(1, int(it.get("quantity") or it.get("qty") or 0))
+        unit_cost = max(0.0, float(it.get("unit_cost") or it.get("rate") or 0))
+        line_total = round(qty * unit_cost, 2)
+        total_amount += line_total
+        total_sheets += qty
+        parsed_items.append({
+            "item_name": i_name,
+            "category": cat,
+            "size_spec": size,
+            "quantity": qty,
+            "unit_cost": unit_cost,
+            "line_total": line_total
+        })
+
+    if not parsed_items:
+        raise ValueError("At least one valid paper item with name and quantity is required.")
+
+    total_amount = round(total_amount, 2)
+    paid_amount = max(0.0, round(float(data.get("paid_amount") or 0), 2))
+    balance_amount = max(0.0, round(total_amount - paid_amount, 2))
+
+    if paid_amount >= total_amount and total_amount > 0:
+        payment_status = "Paid"
+    elif paid_amount <= 0.001:
+        payment_status = "Unpaid"
+    else:
+        payment_status = "Partially Paid"
+
+    summary_name = parsed_items[0]["item_name"]
+    if len(parsed_items) > 1:
+        summary_name = f"{len(parsed_items)} items ({parsed_items[0]['item_name']}, +{len(parsed_items)-1} more)"
+
+    # Insert 1 record into purchases
+    cur.execute("""
+    INSERT INTO purchases (purchase_date, biller_name, supplier_name, bill_number, item_name, category, bundles, sheets_per_bundle, total_sheets, total_amount, paid_amount, balance_amount, payment_status, notes, created_at, is_deleted)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+    RETURNING id
+    """, (purchase_date, biller_name, supplier_name, bill_number, summary_name, parsed_items[0]["category"], 1, total_sheets, total_sheets, total_amount, paid_amount, balance_amount, payment_status, notes, now))
+    purchase_id = cur.fetchone()["id"]
+
+    # Insert items and update inventory stock
+    for it in parsed_items:
+        cur.execute("SELECT id, total_sheets, available_sheets, cost FROM inventory WHERE item_name ILIKE %s AND size_spec ILIKE %s", (it["item_name"], it["size_spec"]))
+        existing = cur.fetchone()
+        if not existing:
+            cur.execute("SELECT id, total_sheets, available_sheets, cost FROM inventory WHERE item_name ILIKE %s", (it["item_name"],))
+            existing = cur.fetchone()
+
+        if existing:
+            item_id = existing["id"]
+            prev_bal = existing["available_sheets"]
+            new_avail = prev_bal + it["quantity"]
+            new_total = existing["total_sheets"] + it["quantity"]
+            new_cost = round(existing["cost"] + it["line_total"], 2)
+            cur.execute("""
+            UPDATE inventory 
+            SET total_sheets=%s, available_sheets=%s, cost=%s, updated_at=%s 
+            WHERE id=%s
+            """, (new_total, new_avail, new_cost, now, item_id))
+        else:
+            prev_bal = 0
+            new_avail = it["quantity"]
+            cur.execute("""
+            INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at)
+            VALUES (%s, %s, %s, 1, %s, %s, %s, 100, %s, %s, %s)
+            RETURNING id
+            """, (it["category"], it["item_name"], it["size_spec"], it["quantity"], it["quantity"], it["quantity"], it["line_total"], notes, now))
+            item_id = cur.fetchone()["id"]
+
+        cur.execute("""
+        INSERT INTO purchase_items (purchase_id, item_id, item_name, category, size_spec, quantity, unit_cost, line_total, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (purchase_id, item_id, it["item_name"], it["category"], it["size_spec"], it["quantity"], it["unit_cost"], it["line_total"], now))
+
+        cur.execute("""
+        INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+        VALUES (%s, 'PURCHASE', %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (item_id, it["quantity"], prev_bal, new_avail, bill_number, f"Supplier: {supplier_name} | By: {biller_name}", biller_name, purchase_date, now))
+
+    if paid_amount > 0:
+        cur.execute("""
+        INSERT INTO purchase_payments (purchase_id, amount, payment_date, payment_method, recorded_by, notes, created_at)
+        VALUES (%s, %s, %s, %s, %s, 'Initial purchase payment', %s)
+        """, (purchase_id, paid_amount, purchase_date, payment_method, biller_name, now))
+
+    return purchase_id, bill_number, total_amount, paid_amount, balance_amount, payment_status
+
+
+def process_edit_purchase(cur, purchase_id, data, user_name="Admin"):
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute("SELECT * FROM purchases WHERE id=%s AND is_deleted=0 FOR UPDATE", (purchase_id,))
+    purchase = cur.fetchone()
+    if not purchase:
+        raise ValueError("Purchase bill not found or already deleted.")
+
+    cur.execute("SELECT * FROM purchase_items WHERE purchase_id=%s", (purchase_id,))
+    old_items = cur.fetchall()
+
+    supplier_name = (data.get("supplier_name") or purchase["supplier_name"]).strip()
+    bill_number = (data.get("bill_number") or purchase["bill_number"]).strip()
+    purchase_date = data.get("purchase_date") or purchase["purchase_date"]
+    biller_name = (data.get("biller_name") or purchase["biller_name"]).strip()
+    notes = (data.get("notes") or "").strip()
+    raw_new_items = data.get("items") or []
+
+    if not raw_new_items:
+        raise ValueError("Purchase must contain at least one item.")
+
+    parsed_new_items = []
+    new_total_amount = 0.0
+    new_total_sheets = 0
+    for it in raw_new_items:
+        i_name = (it.get("item_name") or "").strip()
+        if not i_name:
+            continue
+        cat = (it.get("category") or "Paper").strip()
+        size = (it.get("size_spec") or "A4").strip()
+        qty = max(1, int(it.get("quantity") or it.get("qty") or 0))
+        unit_cost = max(0.0, float(it.get("unit_cost") or it.get("rate") or 0))
+        line_total = round(qty * unit_cost, 2)
+        new_total_amount += line_total
+        new_total_sheets += qty
+        parsed_new_items.append({
+            "item_name": i_name,
+            "category": cat,
+            "size_spec": size,
+            "quantity": qty,
+            "unit_cost": unit_cost,
+            "line_total": line_total
+        })
+
+    if not parsed_new_items:
+        raise ValueError("At least one valid paper item with name and quantity is required.")
+
+    # Check consumed stock constraint:
+    for old_it in old_items:
+        i_id = old_it.get("item_id")
+        if i_id:
+            cur.execute("SELECT item_name, available_sheets FROM inventory WHERE id=%s FOR UPDATE", (i_id,))
+            inv = cur.fetchone()
+            if inv:
+                matching_new = next((n for n in parsed_new_items if n["item_name"].lower() == inv["item_name"].lower()), None)
+                new_qty = matching_new["quantity"] if matching_new else 0
+                net_reduction = old_it["quantity"] - new_qty
+                if net_reduction > 0 and inv["available_sheets"] < net_reduction:
+                    raise ValueError(
+                        f"Cannot edit purchase: {net_reduction - inv['available_sheets']} sheets of '{inv['item_name']}' have already been consumed in billing. "
+                        f"Reversing this purchase would cause a negative stock balance (Available: {inv['available_sheets']} sheets, Reduction: {net_reduction} sheets)."
+                    )
+
+    # Reversal of old items from inventory
+    for old_it in old_items:
+        i_id = old_it.get("item_id")
+        if i_id:
+            cur.execute("SELECT id, available_sheets, total_sheets, cost FROM inventory WHERE id=%s FOR UPDATE", (i_id,))
+            inv = cur.fetchone()
+            if inv:
+                prev_bal = inv["available_sheets"]
+                new_avail = max(0, prev_bal - old_it["quantity"])
+                new_tot = max(0, inv["total_sheets"] - old_it["quantity"])
+                new_cost = max(0.0, round(inv["cost"] - old_it["line_total"], 2))
+                cur.execute("UPDATE inventory SET available_sheets=%s, total_sheets=%s, cost=%s, updated_at=%s WHERE id=%s", (new_avail, new_tot, new_cost, now, i_id))
+                cur.execute("""
+                INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+                VALUES (%s, 'PURCHASE_REVISE_REVERSAL', %s, %s, %s, %s, 'Edit purchase reversal', %s, %s, %s)
+                """, (i_id, -old_it["quantity"], prev_bal, new_avail, bill_number, user_name, purchase_date, now))
+
+    # Delete old purchase items
+    cur.execute("DELETE FROM purchase_items WHERE purchase_id=%s", (purchase_id,))
+
+    # Insert new purchase items and apply to inventory
+    for it in parsed_new_items:
+        cur.execute("SELECT id, total_sheets, available_sheets, cost FROM inventory WHERE item_name ILIKE %s AND size_spec ILIKE %s", (it["item_name"], it["size_spec"]))
+        existing = cur.fetchone()
+        if not existing:
+            cur.execute("SELECT id, total_sheets, available_sheets, cost FROM inventory WHERE item_name ILIKE %s", (it["item_name"],))
+            existing = cur.fetchone()
+
+        if existing:
+            item_id = existing["id"]
+            prev_bal = existing["available_sheets"]
+            new_avail = prev_bal + it["quantity"]
+            new_tot = existing["total_sheets"] + it["quantity"]
+            new_cost = round(existing["cost"] + it["line_total"], 2)
+            cur.execute("UPDATE inventory SET available_sheets=%s, total_sheets=%s, cost=%s, updated_at=%s WHERE id=%s", (new_avail, new_tot, new_cost, now, item_id))
+        else:
+            prev_bal = 0
+            new_avail = it["quantity"]
+            cur.execute("""
+            INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at)
+            VALUES (%s, %s, %s, 1, %s, %s, %s, 100, %s, %s, %s)
+            RETURNING id
+            """, (it["category"], it["item_name"], it["size_spec"], it["quantity"], it["quantity"], it["quantity"], it["line_total"], notes, now))
+            item_id = cur.fetchone()["id"]
+
+        cur.execute("""
+        INSERT INTO purchase_items (purchase_id, item_id, item_name, category, size_spec, quantity, unit_cost, line_total, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (purchase_id, item_id, it["item_name"], it["category"], it["size_spec"], it["quantity"], it["unit_cost"], it["line_total"], now))
+
+        cur.execute("""
+        INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+        VALUES (%s, 'PURCHASE_REVISE_ADD', %s, %s, %s, %s, 'Edit purchase addition', %s, %s, %s)
+        """, (item_id, it["quantity"], prev_bal, new_avail, bill_number, user_name, purchase_date, now))
+
+    # Recalculate totals and status
+    new_total_amount = round(new_total_amount, 2)
+    cur.execute("SELECT COALESCE(SUM(amount), 0) AS total_paid FROM purchase_payments WHERE purchase_id=%s", (purchase_id,))
+    total_paid_recorded = float(cur.fetchone()["total_paid"])
+
+    if "paid_amount" in data and str(data["paid_amount"]).strip() != "":
+        user_paid = max(0.0, round(float(data["paid_amount"]), 2))
+        diff = round(user_paid - total_paid_recorded, 2)
+        if diff != 0:
+            cur.execute("""
+            INSERT INTO purchase_payments (purchase_id, amount, payment_date, payment_method, recorded_by, notes, created_at)
+            VALUES (%s, %s, %s, %s, %s, 'Edit payment adjustment', %s)
+            """, (purchase_id, diff, purchase_date, data.get("payment_method", "Cash"), user_name, now))
+            total_paid_recorded = user_paid
+
+    new_balance = max(0.0, round(new_total_amount - total_paid_recorded, 2))
+    if total_paid_recorded >= new_total_amount and new_total_amount > 0:
+        new_status = "Paid"
+    elif total_paid_recorded <= 0.001:
+        new_status = "Unpaid"
+    else:
+        new_status = "Partially Paid"
+
+    summary_name = parsed_new_items[0]["item_name"]
+    if len(parsed_new_items) > 1:
+        summary_name = f"{len(parsed_new_items)} items ({parsed_new_items[0]['item_name']}, +{len(parsed_new_items)-1} more)"
+
+    cur.execute("""
+    UPDATE purchases 
+    SET supplier_name=%s, bill_number=%s, purchase_date=%s, biller_name=%s,
+        item_name=%s, total_sheets=%s, total_amount=%s, paid_amount=%s, balance_amount=%s,
+        payment_status=%s, notes=%s
+    WHERE id=%s
+    """, (supplier_name, bill_number, purchase_date, biller_name, summary_name, new_total_sheets, new_total_amount, total_paid_recorded, new_balance, new_status, notes, purchase_id))
+
+    cur.execute("""
+    INSERT INTO purchase_audit_log (purchase_id, bill_number, action, performed_by, details, created_at)
+    VALUES (%s, %s, 'EDIT', %s, %s, %s)
+    """, (purchase_id, bill_number, user_name, f"Edited purchase {bill_number}: Total changed from ₹{purchase['total_amount']} to ₹{new_total_amount}.", now))
+
+    return purchase_id, bill_number, new_total_amount, total_paid_recorded, new_balance, new_status
+
+
+def process_delete_purchase(cur, purchase_id, reason="Admin deletion", user_name="Admin"):
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute("SELECT * FROM purchases WHERE id=%s AND is_deleted=0 FOR UPDATE", (purchase_id,))
+    purchase = cur.fetchone()
+    if not purchase:
+        raise ValueError("Purchase bill not found or already deleted.")
+
+    cur.execute("SELECT * FROM purchase_items WHERE purchase_id=%s", (purchase_id,))
+    items = cur.fetchall()
+
+    # Check consumed stock constraint
+    for it in items:
+        i_id = it.get("item_id")
+        if i_id:
+            cur.execute("SELECT item_name, available_sheets FROM inventory WHERE id=%s FOR UPDATE", (i_id,))
+            inv = cur.fetchone()
+            if inv:
+                if inv["available_sheets"] < it["quantity"]:
+                    consumed = it["quantity"] - inv["available_sheets"]
+                    raise ValueError(
+                        f"Cannot delete purchase: {consumed} sheets of '{inv['item_name']}' have already been consumed in billing. "
+                        f"Reversing this purchase would cause a negative stock balance (Available: {inv['available_sheets']} sheets, Purchase quantity: {it['quantity']} sheets)."
+                    )
+
+    # Reverse stock from inventory
+    for it in items:
+        i_id = it.get("item_id")
+        if i_id:
+            cur.execute("SELECT id, available_sheets, total_sheets, cost FROM inventory WHERE id=%s FOR UPDATE", (i_id,))
+            inv = cur.fetchone()
+            if inv:
+                prev_bal = inv["available_sheets"]
+                new_avail = max(0, prev_bal - it["quantity"])
+                new_tot = max(0, inv["total_sheets"] - it["quantity"])
+                new_cost = max(0.0, round(inv["cost"] - it["line_total"], 2))
+                cur.execute("UPDATE inventory SET available_sheets=%s, total_sheets=%s, cost=%s, updated_at=%s WHERE id=%s", (new_avail, new_tot, new_cost, now, i_id))
+                cur.execute("""
+                INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+                VALUES (%s, 'PURCHASE_CANCEL', %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (i_id, -it["quantity"], prev_bal, new_avail, purchase["bill_number"], f"Cancelled purchase {purchase['bill_number']}: {reason}", user_name, purchase["purchase_date"], now))
+
+    # Soft delete purchase and clear balance
+    cur.execute("""
+    UPDATE purchases 
+    SET is_deleted=1, balance_amount=0, notes=notes || %s 
+    WHERE id=%s
+    """, (f" [CANCELLED: {reason}]", purchase_id))
+
+    cur.execute("""
+    INSERT INTO purchase_audit_log (purchase_id, bill_number, action, performed_by, details, created_at)
+    VALUES (%s, %s, 'DELETE', %s, %s, %s)
+    """, (purchase_id, purchase["bill_number"], user_name, f"Deleted purchase {purchase['bill_number']}. Reason: {reason}. Stock reversed for {len(items)} items.", now))
+
+    return purchase["bill_number"]
+
+
+def process_stock_adjustment(cur, item_id, adj_type, quantity, adj_date, reason, user_name="Admin"):
+    now = datetime.now().isoformat(timespec="seconds")
+    cur.execute("SELECT id, item_name, available_sheets FROM inventory WHERE id=%s FOR UPDATE", (item_id,))
+    inv = cur.fetchone()
+    if not inv:
+        raise ValueError("Paper item not found.")
+
+    old_bal = inv["available_sheets"]
+    adj_type = (adj_type or "").upper().strip()
+
+    if adj_type == "ADD":
+        if quantity <= 0:
+            raise ValueError("Adjustment quantity for Add Stock must be greater than zero.")
+        sheets_change = quantity
+        new_bal = old_bal + quantity
+        m_type = "MANUAL_ADD"
+    elif adj_type == "REDUCE":
+        if quantity <= 0:
+            raise ValueError("Adjustment quantity for Reduce Stock must be greater than zero.")
+        if old_bal < quantity:
+            raise ValueError(f"Cannot reduce stock below 0. Current available stock is only {old_bal} sheets.")
+        sheets_change = -quantity
+        new_bal = old_bal - quantity
+        m_type = "MANUAL_REDUCE"
+    elif adj_type == "SET":
+        if quantity < 0:
+            raise ValueError("Stock balance cannot be negative.")
+        sheets_change = quantity - old_bal
+        new_bal = quantity
+        m_type = "MANUAL_SET"
+    else:
+        raise ValueError(f"Invalid adjustment type '{adj_type}'. Must be ADD, REDUCE, or SET.")
+
+    cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_bal, now, item_id))
+    cur.execute("""
+    INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (item_id, m_type, sheets_change, old_bal, new_bal, f"Prev: {old_bal} -> New: {new_bal}", reason, user_name, adj_date, now))
+
+    return inv["item_name"], old_bal, new_bal, sheets_change, m_type
+
+
 # ── Paper & Lamination Stock Inventory ──
 @app.route("/inventory", methods=["GET", "POST"])
 def inventory_page():
     if not DATABASE_URL:
         return "DATABASE_URL missing", 500
     is_admin = bool(session.get("is_admin"))
+    user_name = "Admin" if is_admin else (session.get("user") or "Staff")
+
     with db() as conn:
         with conn.cursor() as cur:
             if request.method == "POST":
                 action = request.form.get("action")
                 now = datetime.now().isoformat(timespec="seconds")
 
-                # Action: Add New Stock / Purchase
+                # Action: Add Supplier Purchase (Supports Multi-item and Single-item)
                 if action == "add":
-                    category = request.form.get("category", "Paper").strip()
-                    item_name = request.form.get("item_name", "").strip()
-                    size_spec = request.form.get("size_spec", "").strip()
-                    biller_name = request.form.get("biller_name", "").strip() or ("Admin" if is_admin else "Staff")
-                    supplier_name = request.form.get("supplier_name", "").strip()
-                    bill_number = request.form.get("bill_number", "").strip()
                     try:
-                        bundles = max(1, int(request.form.get("bundles", 1)))
-                        sheets_per_bundle = max(1, int(request.form.get("sheets_per_bundle", 500)))
-                        added_sheets = bundles * sheets_per_bundle
-                        total_amount = max(0.0, money(request.form.get("total_amount") or request.form.get("cost", 0)))
-                        paid_amount = max(0.0, money(request.form.get("paid_amount", 0)))
-                        balance_amount = max(0.0, money(total_amount - paid_amount))
-                        payment_method = request.form.get("payment_method", "Cash").strip()
-                        purchase_date = request.form.get("purchase_date") or date.today().isoformat()
-                        reorder_level = max(10, int(request.form.get("reorder_level", 100)))
-                        notes = request.form.get("notes", "").strip()
-
-                        if not item_name:
-                            raise ValueError("Item name cannot be empty")
-
-                        if paid_amount >= total_amount and total_amount > 0:
-                            purch_status = "Paid"
-                        elif paid_amount <= 0:
-                            purch_status = "Unpaid"
+                        items_json = request.form.get("items_json")
+                        if items_json:
+                            items_data = json.loads(items_json)
                         else:
-                            purch_status = "Partially Paid"
+                            # Fallback to single item form inputs
+                            item_name = request.form.get("item_name", "").strip()
+                            category = request.form.get("category", "Paper").strip()
+                            size_spec = request.form.get("size_spec", "").strip()
+                            bundles = max(1, int(request.form.get("bundles", 1)))
+                            sheets_per_bundle = max(1, int(request.form.get("sheets_per_bundle", 500)))
+                            qty = bundles * sheets_per_bundle
+                            total_amount = max(0.0, money(request.form.get("total_amount") or request.form.get("cost", 0)))
+                            unit_cost = (total_amount / qty) if qty > 0 else 0.0
+                            items_data = [{
+                                "item_name": item_name,
+                                "category": category,
+                                "size_spec": size_spec,
+                                "quantity": qty,
+                                "unit_cost": unit_cost
+                            }]
 
-                        # Check if paper with this name already exists
-                        cur.execute("SELECT id, total_sheets, available_sheets, cost FROM inventory WHERE item_name ILIKE %s", (item_name,))
-                        existing = cur.fetchone()
-                        if existing:
-                            new_total = existing['total_sheets'] + added_sheets
-                            new_avail = existing['available_sheets'] + added_sheets
-                            new_cost = existing['cost'] + total_amount
-                            cur.execute("""
-                            UPDATE inventory 
-                            SET total_sheets=%s, available_sheets=%s, cost=%s, bundles=bundles+%s, updated_at=%s, notes=%s
-                            WHERE id=%s
-                            """, (new_total, new_avail, new_cost, bundles, now, notes or existing.get('notes',''), existing['id']))
-                            item_id = existing['id']
-                            bal = new_avail
-                        else:
-                            cur.execute("""
-                            INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING id
-                            """, (category, item_name, size_spec, bundles, sheets_per_bundle, added_sheets, added_sheets, reorder_level, total_amount, notes, now))
-                            item_id = cur.fetchone()['id']
-                            bal = added_sheets
+                        payload = {
+                            "supplier_name": request.form.get("supplier_name", "").strip(),
+                            "bill_number": request.form.get("bill_number", "").strip(),
+                            "purchase_date": request.form.get("purchase_date") or date.today().isoformat(),
+                            "biller_name": request.form.get("biller_name", "").strip() or user_name,
+                            "payment_method": request.form.get("payment_method", "Cash").strip(),
+                            "paid_amount": money(request.form.get("paid_amount", 0)),
+                            "notes": request.form.get("notes", "").strip(),
+                            "items": items_data
+                        }
 
-                        # Insert into purchases table (Supplier Purchase Record)
-                        cur.execute("""
-                        INSERT INTO purchases (purchase_date, biller_name, supplier_name, bill_number, item_id, item_name, category, bundles, sheets_per_bundle, total_sheets, total_amount, paid_amount, balance_amount, payment_status, notes, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING id
-                        """, (purchase_date, biller_name, supplier_name, bill_number, item_id, item_name, category, bundles, sheets_per_bundle, added_sheets, total_amount, paid_amount, balance_amount, purch_status, notes, now))
-                        purchase_id = cur.fetchone()['id']
-
-                        # Record initial supplier payment if paid_amount > 0
-                        if paid_amount > 0:
-                            cur.execute("""
-                            INSERT INTO purchase_payments (purchase_id, amount, payment_date, payment_method, recorded_by, notes, created_at)
-                            VALUES (%s, %s, %s, %s, %s, 'Initial purchase payment', %s)
-                            """, (purchase_id, paid_amount, purchase_date, payment_method, biller_name, now))
-
-                        # Log to stock ledger
-                        cur.execute("""
-                        INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
-                        VALUES (%s, 'PURCHASE', %s, %s, %s, %s, %s)
-                        """, (item_id, added_sheets, bal, bill_number or f"{bundles} ream(s)", f"Supplier: {supplier_name} | By: {biller_name}", now))
-
+                        p_id, b_no, tot, pd, bal, st = process_create_purchase(cur, payload, is_admin, biller_default=user_name)
                         conn.commit()
-                        flash(f"Recorded stock purchase: +{added_sheets} sheets of '{item_name}' (Invoice: {bill_number or 'N/A'}).", "success")
+                        flash(f"Recorded supplier purchase invoice '{b_no}' with {len(items_data)} item(s) (Total: {inr(tot)}).", "success")
                     except Exception as e:
                         conn.rollback()
-                        flash(f"Error adding stock entry: {e}", "error")
+                        flash(f"Error adding stock purchase: {e}", "error")
 
                 # Action: Manual Stock Adjustment (Admin only)
                 elif action == "adjust":
@@ -364,35 +738,21 @@ def inventory_page():
                         return redirect(url_for("login", next=request.path))
                     try:
                         item_id = int(request.form.get("item_id"))
-                        adj_type = request.form.get("adj_type", "DAMAGE")
-                        sheets_change = int(request.form.get("sheets_change", 0))
+                        adj_type = request.form.get("adj_type", "ADD")
+                        quantity = int(request.form.get("sheets_change") or request.form.get("quantity", 0))
+                        adj_date = request.form.get("adj_date") or date.today().isoformat()
                         reason = request.form.get("reason", "").strip()
 
-                        if sheets_change == 0:
-                            raise ValueError("Sheets change cannot be zero.")
-
-                        cur.execute("SELECT item_name, available_sheets FROM inventory WHERE id=%s", (item_id,))
-                        inv = cur.fetchone()
-                        if not inv:
-                            raise ValueError("Item not found.")
-
-                        new_bal = inv['available_sheets'] + sheets_change
-                        if new_bal < 0:
-                            raise ValueError(f"Insufficient stock. Available is only {inv['available_sheets']} sheets.")
-
-                        cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_bal, now, item_id))
-                        cur.execute("""
-                        INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """, (item_id, adj_type, sheets_change, new_bal, reason, f"Manual {adj_type}", now))
-
+                        i_name, old_bal, new_bal, change, m_type = process_stock_adjustment(
+                            cur, item_id, adj_type, quantity, adj_date, reason, user_name=user_name
+                        )
                         conn.commit()
-                        flash(f"Stock adjusted for '{inv['item_name']}': {sheets_change:+d} sheets (New balance: {new_bal}).", "success")
+                        flash(f"Manual stock adjustment for '{i_name}': {change:+d} sheets (New balance: {new_bal}).", "success")
                     except Exception as e:
                         conn.rollback()
                         flash(f"Error adjusting stock: {e}", "error")
 
-                # Action: Delete (Admin only)
+                # Action: Delete stock item (Admin only)
                 elif action == "delete":
                     if not is_admin:
                         flash("Admin login required to delete stock items.", "error")
@@ -405,35 +765,6 @@ def inventory_page():
                     except Exception as e:
                         conn.rollback()
                         flash(f"Error removing entry: {e}", "error")
-
-                # Action: Update (Admin only)
-                elif action == "update":
-                    if not is_admin:
-                        flash("Admin login required to edit stock items.", "error")
-                        return redirect(url_for("login", next=request.path))
-                    try:
-                        item_id = int(request.form.get("item_id"))
-                        category = request.form.get("category", "Paper").strip()
-                        item_name = request.form.get("item_name", "").strip()
-                        size_spec = request.form.get("size_spec", "").strip()
-                        available_sheets = max(0, int(request.form.get("available_sheets", 0)))
-                        cost = max(0.0, money(request.form.get("cost", 0)))
-                        reorder_level = max(10, int(request.form.get("reorder_level", 100)))
-                        notes = request.form.get("notes", "").strip()
-
-                        if not item_name:
-                            raise ValueError("Item name cannot be empty")
-
-                        cur.execute("""
-                        UPDATE inventory 
-                        SET category=%s, item_name=%s, size_spec=%s, available_sheets=%s, cost=%s, reorder_level=%s, notes=%s, updated_at=%s
-                        WHERE id=%s
-                        """, (category, item_name, size_spec, available_sheets, cost, reorder_level, notes, now, item_id))
-                        conn.commit()
-                        flash(f"Updated inventory item '{item_name}'.", "success")
-                    except Exception as e:
-                        conn.rollback()
-                        flash(f"Error updating stock entry: {e}", "error")
 
                 return redirect(url_for("inventory_page"))
 
@@ -453,9 +784,9 @@ def inventory_page():
             total_valuation = sum(row.get("available_sheets", 0) * row.get("cost_per_sheet", 0.0) for row in items)
             low_stock_items = [r for r in items if r.get('available_sheets', 0) <= r.get('reorder_level', 100)]
 
-            # Fetch recent stock movements for ledger
+            # Fetch recent stock movements with audit fields
             cur.execute("""
-            SELECT sm.created_at, sm.movement_type, sm.quantity, sm.balance_after, sm.reference_id, sm.notes, i.item_name
+            SELECT sm.created_at, sm.movement_type, sm.quantity, sm.previous_balance, sm.balance_after, sm.reference_id, sm.notes, sm.recorded_by, sm.movement_date, i.item_name
             FROM stock_movements sm
             JOIN inventory i ON sm.item_id = i.id
             ORDER BY sm.id DESC
@@ -463,18 +794,19 @@ def inventory_page():
             """)
             movements = cur.fetchall()
 
-            # Purchase history & filters
+            # Purchase history & filters (Active / non-deleted purchases)
             p_bill = request.args.get("p_bill", "").strip()
             p_biller = request.args.get("p_biller", "").strip()
             p_date = request.args.get("p_date", "").strip()
 
-            p_query = "SELECT * FROM purchases WHERE 1=1"
+            p_query = "SELECT * FROM purchases WHERE is_deleted=0"
             p_params = []
             if p_bill:
                 p_query += " AND bill_number ILIKE %s"
                 p_params.append(f"%{p_bill}%")
             if p_biller:
-                p_query += " AND biller_name ILIKE %s"
+                p_query += " AND (biller_name ILIKE %s OR supplier_name ILIKE %s)"
+                p_params.append(f"%{p_biller}%")
                 p_params.append(f"%{p_biller}%")
             if p_date:
                 p_query += " AND purchase_date = %s"
@@ -484,13 +816,27 @@ def inventory_page():
             cur.execute(p_query, tuple(p_params))
             purchases = cur.fetchall()
 
-            # Supplier purchase stats
+            # Attach purchase_items to each purchase
+            purch_ids = [p["id"] for p in purchases]
+            items_by_purch = {}
+            if purch_ids:
+                cur.execute("SELECT * FROM purchase_items WHERE purchase_id = ANY(%s) ORDER BY id ASC", (purch_ids,))
+                for it in cur.fetchall():
+                    items_by_purch.setdefault(it["purchase_id"], []).append(dict(it))
+
+            for p in purchases:
+                p_items = items_by_purch.get(p["id"], [])
+                p["items"] = p_items
+                p["items_count"] = len(p_items)
+
+            # Supplier purchase stats for active invoices
             cur.execute("""
             SELECT COALESCE(SUM(total_amount), 0) AS total_purchases,
                    COALESCE(SUM(paid_amount), 0) AS total_paid_supplier,
                    COALESCE(SUM(balance_amount), 0) AS total_supplier_balance,
                    COUNT(CASE WHEN balance_amount > 0.001 THEN 1 END) AS pending_purchases_count
             FROM purchases
+            WHERE is_deleted = 0
             """)
             purchase_stats = cur.fetchone()
 
@@ -1445,6 +1791,175 @@ def get_purchase_payments(purchase_id):
         return {"success": True, "purchase": purch, "payments": payments}
     except Exception as e:
         return {"success": False, "error": str(e)}, 500
+
+# ── API: Create Supplier Purchase (Multi-Item) ──
+@app.post("/api/purchases/create")
+def api_create_purchase():
+    try:
+        data = request.get_json(force=True) if request.is_json else request.form.to_dict()
+        if "items_json" in data and isinstance(data["items_json"], str):
+            data["items"] = json.loads(data["items_json"])
+
+        is_admin = bool(session.get("is_admin"))
+        user_name = "Admin" if is_admin else (session.get("user") or "Staff")
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                p_id, b_no, total, paid, bal, status = process_create_purchase(cur, data, is_admin, biller_default=user_name)
+            conn.commit()
+
+        if not request.is_json:
+            flash(f"Recorded supplier purchase invoice '{b_no}' (Total: {inr(total)}).", "success")
+            return redirect(url_for("inventory_page"))
+
+        return {
+            "success": True,
+            "purchase_id": p_id,
+            "bill_number": b_no,
+            "total_amount": total,
+            "paid_amount": paid,
+            "balance_amount": bal,
+            "payment_status": status,
+            "message": f"Supplier purchase bill '{b_no}' recorded successfully."
+        }
+    except Exception as e:
+        if not request.is_json:
+            flash(f"Error creating purchase: {e}", "error")
+            return redirect(url_for("inventory_page"))
+        return {"success": False, "error": str(e)}, 400
+
+# ── API: Get Full Supplier Purchase Details (Items, Payments & Audit) ──
+@app.get("/api/purchases/<int:purchase_id>/details")
+def api_get_purchase_details(purchase_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM purchases WHERE id=%s", (purchase_id,))
+                p = cur.fetchone()
+                if not p:
+                    return {"success": False, "error": "Purchase bill not found."}, 404
+
+                cur.execute("SELECT * FROM purchase_items WHERE purchase_id=%s ORDER BY id ASC", (purchase_id,))
+                items = cur.fetchall()
+
+                cur.execute("SELECT * FROM purchase_payments WHERE purchase_id=%s ORDER BY id ASC", (purchase_id,))
+                payments = cur.fetchall()
+
+                cur.execute("SELECT * FROM purchase_audit_log WHERE purchase_id=%s ORDER BY id DESC", (purchase_id,))
+                audit_logs = cur.fetchall()
+
+        return {
+            "success": True,
+            "purchase": dict(p),
+            "items": [dict(it) for it in items],
+            "payments": [dict(pm) for pm in payments],
+            "audit_logs": [dict(al) for al in audit_logs]
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Edit Supplier Purchase (Admin only with stock reconciliation) ──
+@app.post("/api/purchases/<int:purchase_id>/edit")
+@admin_required
+def api_edit_purchase(purchase_id):
+    try:
+        data = request.get_json(force=True) if request.is_json else request.form.to_dict()
+        if "items_json" in data and isinstance(data["items_json"], str):
+            data["items"] = json.loads(data["items_json"])
+
+        user_name = "Admin"
+        with db() as conn:
+            with conn.cursor() as cur:
+                p_id, b_no, total, paid, bal, status = process_edit_purchase(cur, purchase_id, data, user_name=user_name)
+            conn.commit()
+
+        if not request.is_json:
+            flash(f"Updated supplier purchase '{b_no}' (New Total: {inr(total)}).", "success")
+            return redirect(url_for("inventory_page"))
+
+        return {
+            "success": True,
+            "purchase_id": p_id,
+            "bill_number": b_no,
+            "total_amount": total,
+            "paid_amount": paid,
+            "balance_amount": bal,
+            "payment_status": status,
+            "message": f"Supplier purchase '{b_no}' updated and stock reconciled successfully."
+        }
+    except Exception as e:
+        if not request.is_json:
+            flash(f"Error editing purchase: {e}", "error")
+            return redirect(url_for("inventory_page"))
+        return {"success": False, "error": str(e)}, 400
+
+# ── API: Delete Supplier Purchase (Admin only with stock reversal) ──
+@app.post("/api/purchases/<int:purchase_id>/delete")
+@admin_required
+def api_delete_purchase(purchase_id):
+    try:
+        data = request.get_json(force=True) if request.is_json else request.form.to_dict()
+        reason = (data.get("reason") or "Admin cancellation").strip()
+        user_name = "Admin"
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                b_no = process_delete_purchase(cur, purchase_id, reason=reason, user_name=user_name)
+            conn.commit()
+
+        if not request.is_json:
+            flash(f"Supplier purchase '{b_no}' deleted and stock reversed.", "success")
+            return redirect(url_for("inventory_page"))
+
+        return {
+            "success": True,
+            "bill_number": b_no,
+            "message": f"Supplier purchase '{b_no}' deleted and stock reversed successfully."
+        }
+    except Exception as e:
+        if not request.is_json:
+            flash(f"Error deleting purchase: {e}", "error")
+            return redirect(url_for("inventory_page"))
+        return {"success": False, "error": str(e)}, 400
+
+# ── API: Manual Stock Adjustment (Admin only) ──
+@app.post("/api/inventory/adjust")
+@admin_required
+def api_adjust_inventory():
+    try:
+        data = request.get_json(force=True) if request.is_json else request.form.to_dict()
+        item_id = int(data.get("item_id"))
+        adj_type = data.get("adj_type")
+        quantity = int(data.get("sheets_change") or data.get("quantity", 0))
+        adj_date = data.get("adj_date") or date.today().isoformat()
+        reason = (data.get("reason") or "").strip()
+        user_name = "Admin"
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                i_name, old_bal, new_bal, change, m_type = process_stock_adjustment(
+                    cur, item_id, adj_type, quantity, adj_date, reason, user_name=user_name
+                )
+            conn.commit()
+
+        if not request.is_json:
+            flash(f"Manual stock adjustment for '{i_name}': {change:+d} sheets (New balance: {new_bal}).", "success")
+            return redirect(url_for("inventory_page"))
+
+        return {
+            "success": True,
+            "item_name": i_name,
+            "previous_balance": old_bal,
+            "new_balance": new_bal,
+            "quantity_change": change,
+            "movement_type": m_type,
+            "message": f"Stock adjusted for '{i_name}': {change:+d} sheets (New balance: {new_bal})."
+        }
+    except Exception as e:
+        if not request.is_json:
+            flash(f"Error adjusting stock: {e}", "error")
+            return redirect(url_for("inventory_page"))
+        return {"success": False, "error": str(e)}, 400
 
 # ── Admin Protected Reports & Profit Dashboard ──
 @app.route("/reports")
