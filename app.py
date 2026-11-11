@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, mak
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import os
 from functools import wraps
 from dotenv import load_dotenv
@@ -1652,16 +1652,56 @@ def printer_settings_page():
         available_printers=available_printers
     )
 
+def get_period_date_range(period, custom_start=None, custom_end=None):
+    today = date.today()
+    if period == "today":
+        return today.isoformat(), today.isoformat(), "Today"
+    elif period == "yesterday":
+        yest = today - timedelta(days=1)
+        return yest.isoformat(), yest.isoformat(), "Yesterday"
+    elif period == "last7":
+        start = today - timedelta(days=6)
+        return start.isoformat(), today.isoformat(), "Last 7 Days"
+    elif period == "last30":
+        start = today - timedelta(days=29)
+        return start.isoformat(), today.isoformat(), "Last 30 Days"
+    elif period == "this_month":
+        start = today.replace(day=1)
+        return start.isoformat(), today.isoformat(), "This Month"
+    elif period == "last_month":
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        first_prev = last_prev.replace(day=1)
+        return first_prev.isoformat(), last_prev.isoformat(), "Last Month"
+    elif period == "custom" and (custom_start or custom_end):
+        s = custom_start or "2000-01-01"
+        e = custom_end or today.isoformat()
+        return s, e, "Custom Range"
+    elif custom_start or custom_end:
+        s = custom_start or "2000-01-01"
+        e = custom_end or today.isoformat()
+        return s, e, "Custom Range"
+    return None, None, "All Time"
+
 # ── Bill History (Accessible by Staff & Admin, Confidential Costs Hidden from Staff) ──
 @app.route("/history")
 def history():
     q = request.args.get("q", "").strip()
     status_filter = request.args.get("status", "all").strip()
+    period = request.args.get("period", "").strip()
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
     is_admin = bool(session.get("is_admin"))
+
+    start_d, end_d, period_label = get_period_date_range(period, start_date, end_date)
+    if start_d and not start_date:
+        start_date = start_d
+    if end_d and not end_date:
+        end_date = end_d
 
     with db() as conn:
         with conn.cursor() as cur:
-            # Summary metrics (restricted to Admin in template)
+            # Lifetime metrics (restricted to Admin in template)
             cur.execute("""
                 SELECT COALESCE(SUM(total), 0) AS total_sales,
                        COALESCE(SUM(paid), 0) AS total_collected,
@@ -1671,7 +1711,7 @@ def history():
                 FROM bills
                 WHERE is_deleted = 0
             """)
-            stats = cur.fetchone()
+            lifetime_stats = cur.fetchone()
 
             query = "SELECT * FROM bills WHERE is_deleted = 0"
             params = []
@@ -1687,8 +1727,28 @@ def history():
             elif status_filter == "Partially Paid":
                 query += " AND payment_status = 'Partially Paid'"
 
-            query += " ORDER BY id DESC LIMIT 200"
-            cur.execute(query, tuple(params))
+            if start_d and end_d:
+                query += " AND SUBSTRING(created_at, 1, 10) >= %s AND SUBSTRING(created_at, 1, 10) <= %s"
+                params.extend([start_d, end_d])
+            elif start_d:
+                query += " AND SUBSTRING(created_at, 1, 10) >= %s"
+                params.append(start_d)
+            elif end_d:
+                query += " AND SUBSTRING(created_at, 1, 10) <= %s"
+                params.append(end_d)
+
+            # Period stats for the filtered period & search
+            cur.execute(f"""
+                SELECT COUNT(*) AS total_bills,
+                       COALESCE(SUM(total), 0) AS total_sales,
+                       COALESCE(SUM(paid), 0) AS total_collected,
+                       COALESCE(SUM(balance), 0) AS total_outstanding,
+                       COUNT(CASE WHEN balance > 0.001 THEN 1 END) AS unpaid_count
+                FROM ({query}) filtered_bills
+            """, tuple(params))
+            period_stats = cur.fetchone()
+
+            cur.execute(query + " ORDER BY id DESC LIMIT 500", tuple(params))
             bills = cur.fetchall()
 
     return render_template(
@@ -1696,7 +1756,12 @@ def history():
         bills=bills,
         q=q,
         status_filter=status_filter,
-        stats=stats,
+        period=period,
+        start_date=start_date,
+        end_date=end_date,
+        period_label=period_label,
+        stats=lifetime_stats,
+        period_stats=period_stats,
         is_admin=is_admin
     )
 
@@ -2600,12 +2665,38 @@ def services():
 @admin_required
 def export_csv():
     import csv, io
+    q = request.args.get("q", "").strip()
+    status_filter = request.args.get("status", "all").strip()
+    period = request.args.get("period", "").strip()
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
+
+    start_d, end_d, _ = get_period_date_range(period, start_date, end_date)
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Bill No", "Date/Time", "Customer", "Payment Method", "Status", "Subtotal", "Discount", "Total", "Paid", "Balance", "Paper Cost", "Gross Profit"])
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT bill_no,created_at,customer,payment_method,payment_status,subtotal,discount,total,paid,balance,paper_cost,profit FROM bills WHERE is_deleted=0 ORDER BY id DESC")
+            query = "SELECT bill_no,created_at,customer,payment_method,payment_status,subtotal,discount,total,paid,balance,paper_cost,profit FROM bills WHERE is_deleted=0"
+            params = []
+            if q:
+                query += " AND (bill_no ILIKE %s OR customer ILIKE %s)"
+                params.extend([f"%{q}%", f"%{q}%"])
+            if status_filter in ("Paid", "Unpaid", "Partially Paid"):
+                query += " AND payment_status = %s"
+                params.append(status_filter)
+            if start_d and end_d:
+                query += " AND SUBSTRING(created_at, 1, 10) >= %s AND SUBSTRING(created_at, 1, 10) <= %s"
+                params.extend([start_d, end_d])
+            elif start_d:
+                query += " AND SUBSTRING(created_at, 1, 10) >= %s"
+                params.append(start_d)
+            elif end_d:
+                query += " AND SUBSTRING(created_at, 1, 10) <= %s"
+                params.append(end_d)
+            query += " ORDER BY id DESC"
+            cur.execute(query, tuple(params))
             rows = cur.fetchall()
             writer.writerows([tuple(r.values()) for r in rows])
     response = make_response(output.getvalue())
