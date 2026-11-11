@@ -30,22 +30,11 @@
 </div>
 {% endif %}
 
-<!-- ── Datalist Presets for Paper Items ── -->
+<!-- ── Datalist Presets for Paper Items (Active Only) ── -->
 <datalist id="inventoryPresets">
-  {% for it in inventory %}
+  {% for it in active_items %}
     <option value="{{ it.item_name|e }}" data-cat="{{ it.category|e }}" data-size="{{ it.size_spec|e }}">
   {% endfor %}
-  <option value="A4 75 GSM (JK Copier)" data-cat="Paper" data-size="A4">
-  <option value="Legal Paper 75 GSM" data-cat="Paper" data-size="Legal">
-  <option value="A3 Paper 75 GSM" data-cat="Paper" data-size="A3">
-  <option value="A4 Lamination 125 Microns" data-cat="Lamination" data-size="A4">
-  <option value="A4 Lamination 175 Microns" data-cat="Lamination" data-size="A4">
-  <option value="A4 Photo Paper 130 GSM" data-cat="Paper" data-size="A4">
-  <option value="A4 Photo Paper 220 GSM" data-cat="Paper" data-size="A4">
-  <option value="A3 Photo Paper 220 GSM" data-cat="Paper" data-size="A3">
-  <option value="Laser 12x18 130 GSM" data-cat="Paper" data-size="12x18">
-  <option value="Laser 12x18 220 GSM" data-cat="Paper" data-size="12x18">
-  <option value="Laser 12x18 Sticker Sheet" data-cat="Paper" data-size="12x18">
 </datalist>
 
 <!-- ── Multi-Item Supplier Purchase Panel ── -->
@@ -159,12 +148,26 @@
 
 <!-- ── Current Available Stock Table ── -->
 <section class="panel">
-  <div class="section-title">
+  <div class="section-title" style="flex-wrap: wrap; gap: 10px;">
     <h2>Live Paper Stock Balance ({{ inventory|length }})</h2>
     {% if not is_admin %}
-      <span class="muted" style="font-size: 12px;">🔒 Manual adjustment requires <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
+      <span class="muted" style="font-size: 12px;">🔒 Manual adjustment &amp; item removal require <a href="{{ url_for('login', next=request.path) }}" style="color: var(--accent); font-weight: 600;">Admin Login</a></span>
     {% endif %}
   </div>
+
+  <!-- Status Filter Tabs -->
+  <div class="cat-tabs" style="margin: 0 0 16px; display: flex; gap: 6px; flex-wrap: wrap;">
+    <a href="{{ url_for('inventory_page', status='active', p_bill=p_bill, p_biller=p_biller, p_date=p_date) }}" class="cat-tab {% if status_filter == 'active' or not status_filter %}active{% endif %}">
+      Active Stock ({{ active_count }})
+    </a>
+    <a href="{{ url_for('inventory_page', status='archived', p_bill=p_bill, p_biller=p_biller, p_date=p_date) }}" class="cat-tab {% if status_filter == 'archived' %}active{% endif %}">
+      Archived / Inactive ({{ archived_count }})
+    </a>
+    <a href="{{ url_for('inventory_page', status='all', p_bill=p_bill, p_biller=p_biller, p_date=p_date) }}" class="cat-tab {% if status_filter == 'all' %}active{% endif %}">
+      All Items ({{ total_count }})
+    </a>
+  </div>
+
   <div class="tablewrap">
     <table>
       <thead>
@@ -189,12 +192,16 @@
         {% if not inventory %}
         <tr>
           <td colspan="{% if is_admin %}10{% else %}6{% endif %}" style="text-align: center; color: var(--muted); padding: 32px 0;">
-            No inventory items recorded yet. Use the form above to add paper or lamination sheets.
+            {% if status_filter == 'archived' %}
+              No archived or inactive inventory items found.
+            {% else %}
+              No inventory items recorded yet. Use the form above to add paper or lamination sheets.
+            {% endif %}
           </td>
         </tr>
         {% endif %}
         {% for item in inventory %}
-        <tr {% if item.available_sheets <= item.reorder_level %}style="background: #fff8f8;"{% endif %}>
+        <tr {% if item.is_active and item.available_sheets <= item.reorder_level %}style="background: #fff8f8;"{% elif not item.is_active %}style="background: #f9fafb; opacity: 0.85;"{% endif %}>
           <td>
             <span class="tile-badge {% if item.category == 'Lamination' %}service{% elif item.category == 'Paper' %}bw{% else %}photo{% endif %}">
               {{ item.category | upper }}
@@ -202,16 +209,19 @@
           </td>
           <td>
             <strong>{{ item.item_name }}</strong>
+            {% if not item.is_active %}<span style="display: inline-block; font-size: 10px; background: #e5e7eb; color: #4b5563; padding: 2px 6px; border-radius: 4px; margin-left: 6px; font-weight: 700;">ARCHIVED</span>{% endif %}
             {% if item.notes %}<span style="display: block; font-size: 11px; color: var(--muted);">{{ item.notes }}</span>{% endif %}
           </td>
           <td>{{ item.size_spec or '-' }}</td>
           <td>
-            <strong style="color: {% if item.available_sheets <= item.reorder_level %}#9a214b{% else %}var(--green){% endif %}; font-size: 15px;">
+            <strong style="color: {% if not item.is_active %}#6b7280{% elif item.available_sheets <= item.reorder_level %}#9a214b{% else %}var(--green){% endif %}; font-size: 15px;">
               {{ item.available_sheets }}
             </strong> sheets
           </td>
           <td>
-            {% if item.available_sheets <= item.reorder_level %}
+            {% if not item.is_active %}
+              <span class="status-badge" style="background: #e5e7eb; color: #4b5563; font-weight: 700;">ARCHIVED</span>
+            {% elif item.available_sheets <= item.reorder_level %}
               <span class="status-badge status-disabled">LOW STOCK</span>
             {% else %}
               <span class="status-badge status-active">IN STOCK</span>
@@ -227,14 +237,30 @@
           </td>
           {% if is_admin %}
           <td>
-            <div class="table-actions">
+            <div class="table-actions" style="display: flex; gap: 6px; align-items: center;">
+              {% if item.is_active %}
               <button type="button" class="btn tiny secondary" 
                       data-item-id="{{ item.id }}" 
                       data-item-name="{{ item.item_name|e }}" 
                       data-avail="{{ item.available_sheets }}" 
                       onclick="openAdjustModalFromBtn(this)">
-                Adjust Stock
+                Adjust
               </button>
+              <button type="button" class="btn tiny danger"
+                      data-item-id="{{ item.id }}"
+                      data-item-name="{{ item.item_name|e }}"
+                      data-avail="{{ item.available_sheets }}"
+                      onclick="openRemoveItemModal(this)">
+                Remove
+              </button>
+              {% else %}
+              <button type="button" class="btn tiny secondary"
+                      data-item-id="{{ item.id }}"
+                      data-item-name="{{ item.item_name|e }}"
+                      onclick="reactivateItem({{ item.id }}, '{{ item.item_name|e }}')">
+                Restore Active
+              </button>
+              {% endif %}
             </div>
           </td>
           {% endif %}
@@ -737,6 +763,71 @@
       <button type="submit" class="btn danger" id="delPurchSubmitBtn" style="font-weight:700;">Delete &amp; Reverse Stock</button>
     </div>
   </form>
+</div>
+
+<!-- ── Remove / Archive Stock Item Modal (Admin) ── -->
+<div class="modal-backdrop" id="removeItemBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeRemoveItemModal()"></div>
+<div class="item-modal" id="removeItemModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:500px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800; color:#c81e1e;">Remove Stock Item</h3>
+    <button type="button" class="modal-close" onclick="closeRemoveItemModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+  </div>
+
+  <div id="removeItemLoading" style="text-align:center; padding:20px; font-size:13px; color:var(--muted);">
+    Checking stock balance and linked transactions…
+  </div>
+
+  <div id="removeItemContent" style="display:none;">
+    <div style="margin-bottom:12px;">
+      <span style="font-size:11px; text-transform:uppercase; color:var(--muted); font-weight:700;">Paper / Item</span>
+      <strong id="remItemName" style="font-size:16px; display:block; color:var(--ink);"></strong>
+      <span id="remItemMeta" style="font-size:12px; color:var(--muted);"></span>
+    </div>
+
+    <!-- Stock Balance & Linked History Overview -->
+    <div style="background:var(--soft); border-radius:10px; padding:12px; margin-bottom:14px; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+      <div>
+        <span style="font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:700;">Current Stock</span>
+        <strong id="remItemAvail" style="display:block; font-size:15px; color:var(--ink);">0 sheets</strong>
+      </div>
+      <div>
+        <span style="font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:700;">Linked History</span>
+        <strong id="remItemTxCount" style="display:block; font-size:13px; color:var(--ink);">0 records</strong>
+      </div>
+    </div>
+
+    <!-- Status Notice (Archive vs Permanent Delete) -->
+    <div id="remItemNoticeBox" style="padding:10px 12px; border-radius:8px; font-size:12px; line-height:1.4; margin-bottom:14px;"></div>
+
+    <!-- Stock Treatment Options (If Stock > 0) -->
+    <div id="remStockTreatmentBox" style="display:none; background:#fff8f0; border:1.5px solid #fed7aa; border-radius:10px; padding:12px; margin-bottom:14px;">
+      <label style="display:block; font-size:12px; font-weight:700; color:#b84a00; margin-bottom:6px;">
+        Stock Treatment for Remaining <span id="remStockSheetsSpan"></span> Sheets:
+      </label>
+      <div style="display:flex; flex-direction:column; gap:6px; font-size:12px;">
+        <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+          <input type="radio" name="remStockTreatment" value="zero_out" checked style="margin-top:2px;">
+          <span><strong>Write off &amp; clear stock to 0</strong> (Records an authorized adjustment write-off in the stock ledger)</span>
+        </label>
+        <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+          <input type="radio" name="remStockTreatment" value="keep_balance" style="margin-top:2px;">
+          <span><strong>Keep balance recorded</strong> (Freezes existing stock balance on record without clearing)</span>
+        </label>
+      </div>
+    </div>
+
+    <form id="removeItemForm" onsubmit="submitRemoveItem(event)">
+      <input type="hidden" id="remItemId">
+      <div style="margin-bottom:16px;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reason / Notes for Removal <span style="color:#c81e1e;">*</span></label>
+        <input id="remItemReason" required placeholder="e.g. Discontinued paper / no longer used in shop" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" class="btn secondary" onclick="closeRemoveItemModal()">Cancel</button>
+        <button type="submit" class="btn danger" id="remItemSubmitBtn" style="font-weight:700;">Confirm Removal</button>
+      </div>
+    </form>
+  </div>
 </div>
 {% endif %}
 
@@ -1584,6 +1675,117 @@ async function submitSupplierPayment(e) {
     alert("Error: " + err.message);
     btn.disabled = false;
     btn.textContent = 'Save Payment';
+  }
+}
+
+// ── Remove / Archive Stock Item Modal ──
+async function openRemoveItemModal(btn) {
+  const itemId = btn.dataset.itemId;
+  document.getElementById('remItemId').value = itemId;
+  document.getElementById('remItemLoading').style.display = 'block';
+  document.getElementById('removeItemContent').style.display = 'none';
+  document.getElementById('removeItemModal').style.display = 'block';
+  document.getElementById('removeItemBackdrop').style.display = 'block';
+
+  try {
+    const res = await fetch(`/api/inventory/${itemId}/removal-info`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to inspect inventory item');
+
+    const it = data.item;
+    document.getElementById('remItemName').textContent = it.item_name;
+    document.getElementById('remItemMeta').textContent = `${it.category} · ${it.size_spec || 'Standard Size'}`;
+    document.getElementById('remItemAvail').textContent = `${data.available_sheets} sheets`;
+    document.getElementById('remItemTxCount').textContent = `${data.purchases_count} purchases, ${data.movements_count} movements`;
+
+    const noticeBox = document.getElementById('remItemNoticeBox');
+    const submitBtn = document.getElementById('remItemSubmitBtn');
+    const stockBox = document.getElementById('remStockTreatmentBox');
+    document.getElementById('remStockSheetsSpan').textContent = data.available_sheets;
+
+    if (data.can_delete_permanently) {
+      noticeBox.style.background = '#edfbf7';
+      noticeBox.style.border = '1px solid #c6f6d5';
+      noticeBox.style.color = '#22543d';
+      noticeBox.innerHTML = `<strong>ℹ️ Safe Permanent Deletion</strong><br>This item has never been purchased, adjusted, or billed. It can be safely and permanently deleted from the inventory database.`;
+      submitBtn.textContent = 'Permanently Delete Item';
+      stockBox.style.display = 'none';
+    } else {
+      noticeBox.style.background = '#fff5f5';
+      noticeBox.style.border = '1px solid #fed7d7';
+      noticeBox.style.color = '#742a2a';
+      noticeBox.innerHTML = `<strong>⚠️ Historical Transactions Protected</strong><br>This item has historical records (${data.purchases_count} purchase invoices, ${data.movements_count} stock movements). To preserve accounting, billing history, and stock audit logs, this item will be <strong>safely archived/deactivated</strong> rather than permanently deleted. It will be removed from active stock and disabled for new billing.`;
+      submitBtn.textContent = 'Archive & Remove from Active Stock';
+
+      if (data.available_sheets > 0) {
+        stockBox.style.display = 'block';
+      } else {
+        stockBox.style.display = 'none';
+      }
+    }
+
+    document.getElementById('remItemReason').value = '';
+    document.getElementById('remItemLoading').style.display = 'none';
+    document.getElementById('removeItemContent').style.display = 'block';
+  } catch (err) {
+    alert("Error inspecting item: " + err.message);
+    closeRemoveItemModal();
+  }
+}
+
+function closeRemoveItemModal() {
+  document.getElementById('removeItemModal').style.display = 'none';
+  document.getElementById('removeItemBackdrop').style.display = 'none';
+}
+
+async function submitRemoveItem(e) {
+  e.preventDefault();
+  const itemId = document.getElementById('remItemId').value;
+  const reason = document.getElementById('remItemReason').value.trim();
+  const treatmentRadio = document.querySelector('input[name="remStockTreatment"]:checked');
+  const stock_treatment = treatmentRadio ? treatmentRadio.value : 'zero_out';
+
+  if (!reason) {
+    alert("Please provide a reason for removal.");
+    return;
+  }
+
+  const btn = document.getElementById('remItemSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Processing Removal…';
+
+  try {
+    const res = await fetch(`/api/inventory/${itemId}/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, stock_treatment })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to remove stock item');
+    alert(data.message || 'Item successfully removed/archived!');
+    closeRemoveItemModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Confirm Removal';
+  }
+}
+
+async function reactivateItem(itemId, itemName) {
+  if (!confirm(`Restore and reactivate '${itemName}' into active stock?`)) return;
+  try {
+    const res = await fetch(`/api/inventory/${itemId}/reactivate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to reactivate item');
+    alert(data.message || 'Item reactivated successfully!');
+    window.location.reload();
+  } catch (err) {
+    alert("Error: " + err.message);
   }
 }
 </script>

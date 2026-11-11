@@ -81,8 +81,10 @@ def init_db():
                     reorder_level INTEGER NOT NULL DEFAULT 100,
                     cost REAL NOT NULL DEFAULT 0,
                     notes TEXT DEFAULT '',
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1
                 );
+                ALTER TABLE inventory ADD COLUMN IF NOT EXISTS is_active INTEGER NOT NULL DEFAULT 1;
                 CREATE TABLE IF NOT EXISTS stock_movements (
                     id SERIAL PRIMARY KEY,
                     item_id INTEGER REFERENCES inventory(id) ON DELETE CASCADE,
@@ -948,6 +950,74 @@ def process_stock_adjustment(cur, item_id, adj_type, quantity, adj_date, reason,
     return inv["item_name"], old_bal, new_bal, sheets_change, m_type
 
 
+# ── Safe Stock Item Removal & Archiving Logic (Admin only) ──
+def process_remove_inventory_item(cur, item_id, reason="Removed by Admin", stock_treatment="zero_out", user_name="Admin"):
+    cur.execute("SELECT id, item_name, category, size_spec, available_sheets, total_sheets, cost, is_active FROM inventory WHERE id = %s FOR UPDATE", (item_id,))
+    item = cur.fetchone()
+    if not item:
+        raise ValueError("Inventory item not found.")
+
+    item_name = item["item_name"]
+    avail = item["available_sheets"] or 0
+
+    # Inspect linked transactions across the application
+    cur.execute("SELECT COUNT(*) AS c FROM purchase_items WHERE item_id = %s", (item_id,))
+    purch_c = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM stock_movements WHERE item_id = %s", (item_id,))
+    mov_c = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM purchase_returns WHERE item_id = %s", (item_id,))
+    ret_c = cur.fetchone()["c"]
+
+    cur.execute("SELECT id, name FROM services WHERE paper_id = %s", (item_id,))
+    linked_services = cur.fetchall()
+
+    has_transactions = (purch_c > 0 or mov_c > 0 or ret_c > 0)
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    today_iso = date.today().isoformat()
+
+    if not has_transactions and len(linked_services) == 0:
+        # Zero transactions and not linked to any services -> Safe permanent deletion
+        cur.execute("DELETE FROM inventory WHERE id = %s", (item_id,))
+        return f"Inventory item '{item_name}' permanently deleted as it had no transaction history."
+    else:
+        # Has historical transactions -> Safely archive/deactivate to preserve past bills, purchases & ledger
+        stock_msg = ""
+        if avail > 0:
+            if stock_treatment == "zero_out":
+                # Record explicit stock reduction in movement ledger
+                cur.execute("""
+                    INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+                    VALUES (%s, 'MANUAL_REDUCE', %s, %s, 0, 'ITEM_REMOVED', %s, %s, %s, %s)
+                """, (item_id, -avail, avail, f"Stock written off upon item archiving/removal: {reason}", user_name, today_iso, now_iso))
+                cur.execute("UPDATE inventory SET available_sheets = 0, is_active = 0, updated_at = %s WHERE id = %s", (now_iso, item_id))
+                stock_msg = f"Remaining {avail} sheets written off and recorded in ledger."
+            else:
+                cur.execute("UPDATE inventory SET is_active = 0, updated_at = %s WHERE id = %s", (now_iso, item_id))
+                stock_msg = f"Stock balance of {avail} sheets frozen on record."
+        else:
+            cur.execute("UPDATE inventory SET is_active = 0, updated_at = %s WHERE id = %s", (now_iso, item_id))
+            stock_msg = "Stock balance was 0."
+
+        # Unlink from active services so future bills don't attempt to deduct from this archived paper
+        if linked_services:
+            cur.execute("UPDATE services SET paper_id = NULL WHERE paper_id = %s", (item_id,))
+            service_names = ", ".join([s["name"] for s in linked_services])
+            stock_msg += f" Unlinked from service(s): {service_names}."
+
+        return f"Inventory item '{item_name}' has been safely archived and removed from active stock ({stock_msg}). All historical records are preserved."
+
+def process_reactivate_inventory_item(cur, item_id, user_name="Admin"):
+    cur.execute("SELECT id, item_name, is_active FROM inventory WHERE id = %s FOR UPDATE", (item_id,))
+    item = cur.fetchone()
+    if not item:
+        raise ValueError("Inventory item not found.")
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    cur.execute("UPDATE inventory SET is_active = 1, updated_at = %s WHERE id = %s", (now_iso, item_id))
+    return f"Inventory item '{item['item_name']}' has been reactivated into active stock."
+
+
 # ── Paper & Lamination Stock Inventory ──
 @app.route("/inventory", methods=["GET", "POST"])
 def inventory_page():
@@ -1025,37 +1095,86 @@ def inventory_page():
                         conn.rollback()
                         flash(f"Error adjusting stock: {e}", "error")
 
-                # Action: Delete stock item (Admin only)
-                elif action == "delete":
+                # Action: Remove / Archive / Delete stock item (Admin only)
+                elif action in ("delete", "remove"):
                     if not is_admin:
-                        flash("Admin login required to delete stock items.", "error")
+                        flash("Admin login required to remove stock items.", "error")
                         return redirect(url_for("login", next=request.path))
                     try:
                         item_id = int(request.form.get("item_id"))
-                        cur.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
+                        reason = (request.form.get("reason") or "Manual removal by Admin").strip()
+                        stock_treatment = (request.form.get("stock_treatment") or "zero_out").strip()
+                        msg = process_remove_inventory_item(cur, item_id, reason, stock_treatment, user_name)
                         conn.commit()
-                        flash("Inventory entry removed.", "success")
+                        flash(msg, "success")
                     except Exception as e:
                         conn.rollback()
-                        flash(f"Error removing entry: {e}", "error")
+                        flash(f"Error removing stock item: {e}", "error")
+
+                # Action: Reactivate / Restore archived stock item (Admin only)
+                elif action == "reactivate":
+                    if not is_admin:
+                        flash("Admin login required to reactivate stock items.", "error")
+                        return redirect(url_for("login", next=request.path))
+                    try:
+                        item_id = int(request.form.get("item_id"))
+                        msg = process_reactivate_inventory_item(cur, item_id, user_name)
+                        conn.commit()
+                        flash(msg, "success")
+                    except Exception as e:
+                        conn.rollback()
+                        flash(f"Error reactivating stock item: {e}", "error")
 
                 return redirect(url_for("inventory_page"))
 
-            # Fetch inventory items with calculated sheet cost
+            # Fetch inventory counts
             cur.execute("""
-            SELECT id, category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at,
+            SELECT COUNT(*) AS total_count,
+                   COUNT(CASE WHEN is_active = 1 THEN 1 END) AS active_count,
+                   COUNT(CASE WHEN is_active = 0 THEN 1 END) AS archived_count
+            FROM inventory
+            """)
+            counts = cur.fetchone()
+            active_count = counts["active_count"]
+            archived_count = counts["archived_count"]
+            total_count = counts["total_count"]
+
+            status_filter = request.args.get("status", "active").strip()
+            inv_query = """
+            SELECT id, category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at, is_active,
                    ROUND((cost / NULLIF(total_sheets, 0))::numeric, 3) AS cost_per_sheet
             FROM inventory 
-            ORDER BY category, item_name
-            """)
+            """
+            if status_filter == "archived":
+                inv_query += " WHERE is_active = 0"
+            elif status_filter == "all":
+                pass
+            else:
+                status_filter = "active"
+                inv_query += " WHERE is_active = 1"
+
+            inv_query += " ORDER BY is_active DESC, category, item_name"
+            cur.execute(inv_query)
             items = cur.fetchall()
             for r in items:
                 r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
 
-            total_items = len(items)
-            total_available_sheets = sum(row.get("available_sheets", 0) for row in items)
-            total_valuation = sum(row.get("available_sheets", 0) * row.get("cost_per_sheet", 0.0) for row in items)
-            low_stock_items = [r for r in items if r.get('available_sheets', 0) <= r.get('reorder_level', 100)]
+            # Active items for metrics and datalist
+            cur.execute("""
+            SELECT id, category, item_name, size_spec, available_sheets, reorder_level, is_active,
+                   ROUND((cost / NULLIF(total_sheets, 0))::numeric, 3) AS cost_per_sheet
+            FROM inventory 
+            WHERE is_active = 1
+            ORDER BY category, item_name
+            """)
+            active_items = cur.fetchall()
+            for r in active_items:
+                r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
+
+            total_items = len(active_items)
+            total_available_sheets = sum(row.get("available_sheets", 0) for row in active_items)
+            total_valuation = sum(row.get("available_sheets", 0) * row.get("cost_per_sheet", 0.0) for row in active_items)
+            low_stock_items = [r for r in active_items if r.get('available_sheets', 0) <= r.get('reorder_level', 100)]
 
             # Fetch recent stock movements with audit fields
             cur.execute("""
@@ -1118,6 +1237,11 @@ def inventory_page():
     return render_template(
         "inventory.html",
         inventory=items,
+        active_items=active_items,
+        active_count=active_count,
+        archived_count=archived_count,
+        total_count=total_count,
+        status_filter=status_filter,
         movements=movements,
         purchases=purchases,
         purchase_stats=purchase_stats,
@@ -1220,11 +1344,12 @@ def create_bill():
 
     with db() as conn:
         with conn.cursor() as cur:
-            # Build sheet cost lookup from current inventory
+            # Build sheet cost lookup from current active inventory
             cur.execute("""
             SELECT id, item_name, size_spec, available_sheets, 
                    ROUND((cost / NULLIF(total_sheets,0))::numeric, 4) AS cost_per_sheet
             FROM inventory
+            WHERE is_active = 1
             """)
             inv_rows = cur.fetchall()
             inv_map = {r['id']: float(r['cost_per_sheet'] or 0.0) for r in inv_rows}
@@ -1423,11 +1548,12 @@ def create_bill_api():
 
         with db() as conn:
             with conn.cursor() as cur:
-                # Pre-fetch inventory cost lookup
+                # Pre-fetch active inventory cost lookup
                 cur.execute("""
                 SELECT id, item_name, size_spec, available_sheets, 
                        ROUND((cost / NULLIF(total_sheets,0))::numeric, 4) AS cost_per_sheet
                 FROM inventory
+                WHERE is_active = 1
                 """)
                 inv_rows = cur.fetchall()
                 inv_map = {r['id']: float(r['cost_per_sheet'] or 0.0) for r in inv_rows}
@@ -1980,6 +2106,7 @@ def edit_bill(bill_id):
                 SELECT id, item_name, size_spec, available_sheets, 
                        ROUND((cost / NULLIF(total_sheets,0))::numeric, 4) AS cost_per_sheet
                 FROM inventory
+                WHERE is_active = 1
                 """)
                 inv_rows = cur.fetchall()
                 inv_by_size = { (r['size_spec'] or '').strip().upper(): (r['id'], float(r['cost_per_sheet'] or 0.0)) for r in inv_rows }
@@ -2474,6 +2601,98 @@ def api_adjust_inventory():
             return redirect(url_for("inventory_page"))
         return {"success": False, "error": str(e)}, 400
 
+# ── API: Inspect Inventory Item for Removal (Admin only) ──
+@app.get("/api/inventory/<int:item_id>/removal-info")
+@admin_required
+def api_inventory_removal_info(item_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, item_name, category, size_spec, available_sheets, total_sheets, cost, is_active FROM inventory WHERE id = %s", (item_id,))
+                item = cur.fetchone()
+                if not item:
+                    return {"success": False, "error": "Item not found."}, 404
+
+                cur.execute("SELECT COUNT(*) AS c, COALESCE(SUM(quantity), 0) AS total_purchased FROM purchase_items WHERE item_id = %s", (item_id,))
+                p_info = cur.fetchone()
+                purch_c = p_info["c"]
+                total_purchased = p_info["total_purchased"]
+
+                cur.execute("SELECT COUNT(*) AS c FROM stock_movements WHERE item_id = %s", (item_id,))
+                mov_c = cur.fetchone()["c"]
+
+                cur.execute("SELECT COUNT(*) AS c FROM purchase_returns WHERE item_id = %s", (item_id,))
+                ret_c = cur.fetchone()["c"]
+
+                cur.execute("SELECT id, name FROM services WHERE paper_id = %s", (item_id,))
+                services = [s["name"] for s in cur.fetchall()]
+
+                total_tx = purch_c + mov_c + ret_c
+                can_delete_permanently = (total_tx == 0 and len(services) == 0)
+
+                return {
+                    "success": True,
+                    "item": dict(item),
+                    "can_delete_permanently": can_delete_permanently,
+                    "has_transactions": total_tx > 0,
+                    "purchases_count": purch_c,
+                    "total_purchased_sheets": total_purchased,
+                    "movements_count": mov_c,
+                    "returns_count": ret_c,
+                    "linked_services": services,
+                    "available_sheets": item["available_sheets"] or 0
+                }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+# ── API: Safe Remove / Archive Inventory Item (Admin only) ──
+@app.post("/api/inventory/<int:item_id>/remove")
+@admin_required
+def api_inventory_remove(item_id):
+    try:
+        data = request.get_json(force=True) if request.is_json else request.form.to_dict()
+        reason = (data.get("reason") or "Manual removal by Admin").strip()
+        stock_treatment = (data.get("stock_treatment") or "zero_out").strip()
+        user_name = "Admin"
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                msg = process_remove_inventory_item(cur, item_id, reason, stock_treatment, user_name)
+            conn.commit()
+
+        if not request.is_json:
+            flash(msg, "success")
+            return redirect(url_for("inventory_page"))
+
+        return {"success": True, "message": msg}
+    except Exception as e:
+        if not request.is_json:
+            flash(f"Error removing item: {e}", "error")
+            return redirect(url_for("inventory_page"))
+        return {"success": False, "error": str(e)}, 400
+
+# ── API: Reactivate / Restore Inventory Item (Admin only) ──
+@app.post("/api/inventory/<int:item_id>/reactivate")
+@admin_required
+def api_inventory_reactivate(item_id):
+    try:
+        user_name = "Admin"
+        with db() as conn:
+            with conn.cursor() as cur:
+                msg = process_reactivate_inventory_item(cur, item_id, user_name)
+            conn.commit()
+
+        if not request.is_json:
+            flash(msg, "success")
+            return redirect(url_for("inventory_page"))
+
+        return {"success": True, "message": msg}
+    except Exception as e:
+        if not request.is_json:
+            flash(f"Error reactivating item: {e}", "error")
+            return redirect(url_for("inventory_page"))
+        return {"success": False, "error": str(e)}, 400
+
 # ── Admin Protected Reports & Profit Dashboard ──
 @app.route("/reports")
 @admin_required
@@ -2655,8 +2874,8 @@ def services():
             """)
             services_rows = cur.fetchall()
 
-            # All available papers for mapping dropdown
-            cur.execute("SELECT id, item_name, size_spec FROM inventory ORDER BY item_name")
+            # All available active papers for mapping dropdown
+            cur.execute("SELECT id, item_name, size_spec FROM inventory WHERE is_active = 1 ORDER BY item_name")
             papers = cur.fetchall()
 
     return render_template("services.html", services=services_rows, papers=papers)
