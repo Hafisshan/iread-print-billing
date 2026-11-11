@@ -254,8 +254,14 @@
   {% if is_admin and purchase_stats %}
   <div class="stats" style="margin-bottom: 16px;">
     <div><span>Total Purchases</span><strong>{{ purchase_stats.total_purchases|inr }}</strong></div>
+    {% if purchase_stats.total_returned_amount and purchase_stats.total_returned_amount > 0.001 %}
+    <div><span>Stock Returned</span><strong style="color: #c81e1e;">{{ purchase_stats.total_returned_amount|inr }}</strong></div>
+    {% endif %}
     <div><span>Paid to Suppliers</span><strong style="color: var(--green);">{{ purchase_stats.total_paid_supplier|inr }}</strong></div>
     <div><span>Outstanding Payable</span><strong style="color: #b84a00;">{{ purchase_stats.total_supplier_balance|inr }}</strong></div>
+    {% if purchase_stats.total_supplier_credit and purchase_stats.total_supplier_credit > 0.001 %}
+    <div><span>Supplier Credit Due</span><strong style="color: #0284c7;">{{ purchase_stats.total_supplier_credit|inr }}</strong></div>
+    {% endif %}
     <div><span>Pending Invoices</span><strong style="color: #9a214b;">{{ purchase_stats.pending_purchases_count }}</strong></div>
   </div>
   {% endif %}
@@ -309,13 +315,28 @@
             {% endif %}
           </td>
           <td><strong>{{ p.total_sheets }}</strong></td>
-          <td>{{ p.total_amount|inr }}</td>
+          <td>
+            {{ p.total_amount|inr }}
+            {% if p.returned_amount and p.returned_amount > 0.001 %}
+              <span style="display: block; font-size: 10px; color: #c81e1e; font-weight: 700;">-{{ p.returned_amount|inr }} Ret</span>
+              <span class="muted" style="display: block; font-size: 10px;">Net: {{ (p.total_amount - p.returned_amount)|inr }}</span>
+            {% endif %}
+          </td>
           <td style="color: var(--green);">{{ p.paid_amount|inr }}</td>
-          <td style="color: {% if p.balance_amount > 0.001 %}#b84a00{% else %}var(--muted){% endif %}; font-weight: 700;">
-            {{ p.balance_amount|inr }}
+          <td>
+            {% if p.supplier_credit and p.supplier_credit > 0.001 %}
+              <span style="color: #0284c7; font-weight: 800;">+{{ p.supplier_credit|inr }}</span>
+              <span class="muted" style="display: block; font-size: 10px; color: #0284c7;">Supplier Credit</span>
+            {% else %}
+              <span style="color: {% if p.balance_amount > 0.001 %}#b84a00{% else %}var(--muted){% endif %}; font-weight: 700;">
+                {{ p.balance_amount|inr }}
+              </span>
+            {% endif %}
           </td>
           <td>
-            {% if p.balance_amount <= 0.001 or p.payment_status == 'Paid' %}
+            {% if p.supplier_credit and p.supplier_credit > 0.001 %}
+              <span class="status-badge" style="background: #e0f2fe; color: #0284c7; border: 1px solid #7dd3fc; font-weight: 800;">CREDIT DUE</span>
+            {% elif p.balance_amount <= 0.001 or p.payment_status == 'Paid' %}
               <span class="status-badge" style="background: #e8f5ee; color: #16784b; border: 1px solid #16784b30; font-weight: 700;">✔ PAID</span>
             {% elif p.paid_amount <= 0.001 or p.payment_status == 'Unpaid' %}
               <span class="status-badge" style="background: #fde8e8; color: #c81e1e; border: 1px solid #f98080; font-weight: 700;">✕ UNPAID</span>
@@ -479,7 +500,7 @@
 
 <!-- ── View Full Supplier Purchase Bill Modal ── -->
 <div class="modal-backdrop" id="viewPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="viewPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:680px; max-height:85vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+<div class="item-modal" id="viewPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:760px; max-height:88vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
     <h3 style="margin:0; font-size:16px; font-weight:800;">Supplier Invoice — <span id="vpBillNumber"></span></h3>
     <button type="button" class="modal-close" onclick="closeViewPurchaseModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
@@ -492,22 +513,38 @@
     <div><span class="muted">Status:</span> <span id="vpStatusBadge" style="display:inline-block; font-weight:800;"></span></div>
   </div>
 
-  <div style="background:var(--soft); border-radius:10px; padding:10px 14px; margin-bottom:16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center;">
-    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Total Bill Amount</span><strong style="display:block; font-size:15px;" id="vpTotalAmount">₹0.00</strong></div>
-    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Paid to Supplier</span><strong style="display:block; font-size:15px; color:var(--green);" id="vpPaidAmount">₹0.00</strong></div>
-    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Balance Due</span><strong style="display:block; font-size:15px; color:#b84a00;" id="vpBalanceAmount">₹0.00</strong></div>
+  <div style="background:var(--soft); border-radius:10px; padding:12px 14px; margin-bottom:16px; display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px; text-align:center;">
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Invoice Total</span><strong style="display:block; font-size:14px;" id="vpTotalAmount">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Returned Stock</span><strong style="display:block; font-size:14px; color:#c81e1e;" id="vpReturnedAmount">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Net Payable</span><strong style="display:block; font-size:14px;" id="vpNetPayable">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Paid to Supplier</span><strong style="display:block; font-size:14px; color:var(--green);" id="vpPaidAmount">₹0.00</strong></div>
+    <div><span style="font-size:10px; color:var(--muted); text-transform:uppercase;">Balance / Credit</span><strong style="display:block; font-size:14px; color:#b84a00;" id="vpBalanceAmount">₹0.00</strong></div>
   </div>
 
-  <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:var(--ink);">Purchased Paper Items</strong>
+  <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:var(--ink);">Purchased Paper Items &amp; Stock Status</strong>
   <div class="tablewrap" style="border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
     <table style="width:100%; font-size:12px; margin:0;">
       <thead>
         <tr style="background:var(--soft);">
-          <th>Paper Item</th><th>Category</th><th>Size</th><th style="text-align:right;">Sheets</th><th style="text-align:right;">Unit Cost</th><th style="text-align:right;">Line Total</th>
+          <th>Paper Item</th><th>Cat / Size</th><th style="text-align:right;">Purchased</th><th style="text-align:right;">Consumed</th><th style="text-align:right;">Returned</th><th style="text-align:right;">Unsold Avail</th><th style="text-align:right;">Unit Cost</th><th style="text-align:right;">Net Total</th><th style="text-align:center;">Action</th>
         </tr>
       </thead>
       <tbody id="vpItemsBody"></tbody>
     </table>
+  </div>
+
+  <div id="vpReturnsSection" style="display:none;">
+    <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:#c81e1e;">Stock Returns to Supplier Ledger</strong>
+    <div class="tablewrap" style="border:1px solid #f9808060; border-radius:8px; margin-bottom:16px;">
+      <table style="width:100%; font-size:12px; margin:0;">
+        <thead>
+          <tr style="background:#fef2f2;">
+            <th>Date</th><th>Item</th><th style="text-align:right;">Sheets Returned</th><th style="text-align:right;">Unit Cost</th><th style="text-align:right;">Credit / Refund</th><th>Reason</th><th>By</th>
+          </tr>
+        </thead>
+        <tbody id="vpReturnsBody"></tbody>
+      </table>
+    </div>
   </div>
 
   <strong style="display:block; font-size:13px; text-transform:uppercase; margin-bottom:8px; color:var(--ink);">Payment Transactions Ledger</strong>
@@ -538,6 +575,64 @@
     <button type="button" class="btn secondary" onclick="closeViewPurchaseModal()">Close</button>
   </div>
 </div>
+
+{% if is_admin %}
+<!-- ── Return Paper Stock to Supplier Modal (Admin) ── -->
+<div class="modal-backdrop" id="retPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1002;"></div>
+<div class="item-modal" id="retPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:480px; z-index:1003; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+    <h3 style="margin:0; font-size:16px; font-weight:800;">Return Unsold Stock to Supplier</h3>
+    <button type="button" class="modal-close" onclick="closeReturnModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+  </div>
+
+  <p class="muted" style="font-size:12px; margin-bottom:14px;">
+    Returns unsold physical paper sheets back to the supplier. Deducts stock from inventory and updates invoice balance or generates supplier credit.
+  </p>
+
+  <form id="retPurchForm" onsubmit="submitReturnStock(event)">
+    <input type="hidden" id="rpPurchId">
+    <input type="hidden" id="rpItemId">
+    <input type="hidden" id="rpUnitCost">
+
+    <div style="background:#faf8fc; border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:14px; font-size:12px;">
+      <div style="margin-bottom:6px;"><span class="muted">Paper Item:</span> <strong id="rpItemName" style="color:var(--ink);"></strong></div>
+      <div style="margin-bottom:6px;"><span class="muted">Supplier Invoice:</span> <strong id="rpBillNumber" style="color:var(--ink);"></strong> (<span id="rpSupplierName"></span>)</div>
+      <div><span class="muted">Unsold Stock Available to Return:</span> <strong id="rpMaxEligibleDisplay" style="color:var(--green); font-size:14px;"></strong> sheets</div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Sheets to Return</label>
+        <input type="number" id="rpReturnQty" min="1" required oninput="calcReturnAmount()" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:700;">
+      </div>
+      <div>
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Return Date</label>
+        <input type="date" id="rpReturnDate" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+    </div>
+
+    <div style="background:#e8f5ee; border:1px solid #16784b40; border-radius:8px; padding:10px; margin-bottom:14px; text-align:center;">
+      <span style="font-size:11px; color:#16784b; font-weight:700; text-transform:uppercase;">Calculated Refund / Credit Value</span>
+      <strong style="display:block; font-size:18px; color:#16784b;" id="rpTotalReturnAmtDisplay">₹0.00</strong>
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reason for Return</label>
+      <input type="text" id="rpReason" required placeholder="e.g. Excess stock / damaged bundle / supplier agreed return" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Additional Notes (Optional)</label>
+      <input type="text" id="rpNotes" placeholder="Optional notes" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="button" class="btn secondary" onclick="closeReturnModal()">Cancel</button>
+      <button type="submit" class="btn primary" id="rpSubmitBtn" style="background:#b84a00; border-color:#b84a00; font-weight:800;">Confirm Return</button>
+    </div>
+  </form>
+</div>
+{% endif %}
 
 {% if is_admin %}
 <!-- ── Edit Supplier Purchase Bill Modal (Admin) ── -->
@@ -968,6 +1063,11 @@ async function submitStockAdjustment(e) {
   }
 }
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
 // ── View Full Purchase Bill Modal ──
 async function viewPurchaseDetails(purchId) {
   try {
@@ -980,34 +1080,97 @@ async function viewPurchaseDetails(purchId) {
     document.getElementById('vpSupplierName').textContent = p.supplier_name || '-';
     document.getElementById('vpDate').textContent = p.purchase_date || '-';
     document.getElementById('vpBiller').textContent = p.biller_name || 'Admin';
-    document.getElementById('vpTotalAmount').textContent = '₹' + Number(p.total_amount).toFixed(2);
-    document.getElementById('vpPaidAmount').textContent = '₹' + Number(p.paid_amount).toFixed(2);
-    document.getElementById('vpBalanceAmount').textContent = '₹' + Number(p.balance_amount).toFixed(2);
 
-    const st = document.getElementById('vpStatusBadge');
-    st.textContent = p.payment_status.toUpperCase();
-    st.className = 'status-badge';
-    if (p.payment_status === 'Paid') {
-      st.style.background = '#e8f5ee'; st.style.color = '#16784b';
-    } else if (p.payment_status === 'Unpaid') {
-      st.style.background = '#fde8e8'; st.style.color = '#c81e1e';
+    const tot = Number(p.total_amount || 0);
+    const ret = Number(p.returned_amount || 0);
+    const net = Math.max(0, tot - ret);
+    const paid = Number(p.paid_amount || 0);
+    const bal = Number(p.balance_amount || 0);
+    const credit = Number(p.supplier_credit || 0);
+
+    document.getElementById('vpTotalAmount').textContent = '₹' + tot.toFixed(2);
+    document.getElementById('vpReturnedAmount').textContent = ret > 0.001 ? '-₹' + ret.toFixed(2) : '₹0.00';
+    document.getElementById('vpNetPayable').textContent = '₹' + net.toFixed(2);
+    document.getElementById('vpPaidAmount').textContent = '₹' + paid.toFixed(2);
+
+    const balEl = document.getElementById('vpBalanceAmount');
+    if (credit > 0.001) {
+      balEl.textContent = '+₹' + credit.toFixed(2) + ' (Credit Due)';
+      balEl.style.color = '#0284c7';
     } else {
-      st.style.background = '#fef08a'; st.style.color = '#854d0e';
+      balEl.textContent = '₹' + bal.toFixed(2);
+      balEl.style.color = bal > 0.001 ? '#b84a00' : 'var(--ink)';
     }
 
-    // Items table
+    const st = document.getElementById('vpStatusBadge');
+    if (credit > 0.001) {
+      st.textContent = 'CREDIT DUE';
+      st.className = 'status-badge';
+      st.style.background = '#e0f2fe'; st.style.color = '#0284c7';
+    } else {
+      st.textContent = p.payment_status.toUpperCase();
+      st.className = 'status-badge';
+      if (p.payment_status === 'Paid') {
+        st.style.background = '#e8f5ee'; st.style.color = '#16784b';
+      } else if (p.payment_status === 'Unpaid') {
+        st.style.background = '#fde8e8'; st.style.color = '#c81e1e';
+      } else {
+        st.style.background = '#fef08a'; st.style.color = '#854d0e';
+      }
+    }
+
+    // Items table with breakdown
     const itemsBody = document.getElementById('vpItemsBody');
     itemsBody.innerHTML = '';
     (data.items || []).forEach(it => {
+      const netQty = (it.quantity || 0) - (it.returned_quantity || 0);
+      const eligible = it.eligible_to_return || 0;
+      const consumed = it.consumed_quantity || 0;
+      const returned = it.returned_quantity || 0;
+      const netTotal = it.net_line_total !== undefined ? it.net_line_total : (netQty * (it.unit_cost || 0));
+
+      let actionHtml = '';
+      if (eligible > 0) {
+        actionHtml = `<button type="button" class="btn tiny secondary" onclick="openReturnModalFromItem(${p.id}, ${it.id}, '${escapeHtml(it.item_name)}', '${escapeHtml(p.bill_number)}', '${escapeHtml(p.supplier_name)}', ${eligible}, ${it.unit_cost})" style="color:#b84a00; border-color:#f97316; font-weight:700;">↩ Return Stock</button>`;
+      } else if (consumed > 0) {
+        actionHtml = `<span class="muted" style="font-size:11px;">Billed / Consumed</span>`;
+      } else {
+        actionHtml = `<span class="muted" style="font-size:11px;">Completed</span>`;
+      }
+
       itemsBody.innerHTML += `<tr>
-        <td><strong>${it.item_name}</strong></td>
-        <td>${it.category}</td>
-        <td>${it.size_spec || '-'}</td>
+        <td><strong>${escapeHtml(it.item_name)}</strong></td>
+        <td>${escapeHtml(it.category)} / ${escapeHtml(it.size_spec || '-')}</td>
         <td style="text-align:right;"><strong>${it.quantity.toLocaleString()}</strong></td>
+        <td style="text-align:right; color:#b84a00; font-weight:700;">${consumed.toLocaleString()}</td>
+        <td style="text-align:right; color:#c81e1e; font-weight:700;">${returned.toLocaleString()}</td>
+        <td style="text-align:right; color:var(--green); font-weight:800;">${eligible.toLocaleString()}</td>
         <td style="text-align:right;">₹${Number(it.unit_cost).toFixed(3)}</td>
-        <td style="text-align:right; font-weight:800;">₹${Number(it.line_total).toFixed(2)}</td>
+        <td style="text-align:right; font-weight:800;">₹${Number(netTotal).toFixed(2)}</td>
+        <td style="text-align:center;">${actionHtml}</td>
       </tr>`;
     });
+
+    // Stock Returns to Supplier table
+    const retSec = document.getElementById('vpReturnsSection');
+    const retBody = document.getElementById('vpReturnsBody');
+    retBody.innerHTML = '';
+    if (data.returns && data.returns.length > 0) {
+      retSec.style.display = 'block';
+      data.returns.forEach(r => {
+        retBody.innerHTML += `<tr>
+          <td>${r.return_date || r.created_at.slice(0, 10)}</td>
+          <td><strong>${escapeHtml(r.item_name)}</strong></td>
+          <td style="text-align:right; color:#c81e1e; font-weight:700;">-${Number(r.return_quantity).toLocaleString()}</td>
+          <td style="text-align:right;">₹${Number(r.unit_cost).toFixed(3)}</td>
+          <td style="text-align:right; color:var(--green); font-weight:800;">₹${Number(r.return_amount).toFixed(2)}</td>
+          <td>${escapeHtml(r.reason || '-')}</td>
+          <td class="muted">${escapeHtml(r.recorded_by || 'Admin')}</td>
+        </tr>`;
+      });
+    } else {
+      retSec.style.display = 'none';
+    }
 
     // Payments table
     const pmBody = document.getElementById('vpPaymentsBody');
@@ -1017,9 +1180,9 @@ async function viewPurchaseDetails(purchId) {
         pmBody.innerHTML += `<tr>
           <td>${pm.payment_date || pm.created_at.slice(0, 10)}</td>
           <td style="color:var(--green); font-weight:800;">₹${Number(pm.amount).toFixed(2)}</td>
-          <td>${pm.payment_method}</td>
-          <td>${pm.recorded_by || 'Admin'}</td>
-          <td class="muted">${pm.notes || '-'}</td>
+          <td>${escapeHtml(pm.payment_method)}</td>
+          <td>${escapeHtml(pm.recorded_by || 'Admin')}</td>
+          <td class="muted">${escapeHtml(pm.notes || '-')}</td>
         </tr>`;
       });
     } else {
@@ -1035,9 +1198,9 @@ async function viewPurchaseDetails(purchId) {
       data.audit_logs.forEach(al => {
         auditBody.innerHTML += `<tr>
           <td style="white-space:nowrap;">${al.created_at.replace('T', ' ')}</td>
-          <td><strong>${al.action}</strong></td>
-          <td>${al.performed_by}</td>
-          <td>${al.details}</td>
+          <td><strong>${escapeHtml(al.action)}</strong></td>
+          <td>${escapeHtml(al.performed_by)}</td>
+          <td>${escapeHtml(al.details)}</td>
         </tr>`;
       });
     } else {
@@ -1054,6 +1217,81 @@ async function viewPurchaseDetails(purchId) {
 function closeViewPurchaseModal() {
   document.getElementById('viewPurchModal').style.display = 'none';
   document.getElementById('viewPurchBackdrop').style.display = 'none';
+}
+
+// ── Return Stock to Supplier Modal Functions ──
+function openReturnModalFromItem(purchId, itemId, itemName, billNo, supplierName, eligibleQty, unitCost) {
+  document.getElementById('rpPurchId').value = purchId;
+  document.getElementById('rpItemId').value = itemId;
+  document.getElementById('rpUnitCost').value = unitCost;
+  document.getElementById('rpItemName').textContent = itemName;
+  document.getElementById('rpBillNumber').textContent = billNo;
+  document.getElementById('rpSupplierName').textContent = supplierName;
+  document.getElementById('rpMaxEligibleDisplay').textContent = Number(eligibleQty).toLocaleString();
+
+  const qtyInput = document.getElementById('rpReturnQty');
+  qtyInput.max = eligibleQty;
+  qtyInput.value = eligibleQty;
+  document.getElementById('rpReturnDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('rpReason').value = '';
+  document.getElementById('rpNotes').value = '';
+
+  calcReturnAmount();
+  document.getElementById('retPurchModal').style.display = 'block';
+  document.getElementById('retPurchBackdrop').style.display = 'block';
+}
+
+function closeReturnModal() {
+  document.getElementById('retPurchModal').style.display = 'none';
+  document.getElementById('retPurchBackdrop').style.display = 'none';
+}
+
+function calcReturnAmount() {
+  const qty = parseInt(document.getElementById('rpReturnQty').value) || 0;
+  const cost = parseFloat(document.getElementById('rpUnitCost').value) || 0;
+  document.getElementById('rpTotalReturnAmtDisplay').textContent = '₹' + (qty * cost).toFixed(2);
+}
+
+async function submitReturnStock(e) {
+  e.preventDefault();
+  const purchId = document.getElementById('rpPurchId').value;
+  const purchase_item_id = parseInt(document.getElementById('rpItemId').value) || 0;
+  const return_quantity = parseInt(document.getElementById('rpReturnQty').value) || 0;
+  const return_date = document.getElementById('rpReturnDate').value;
+  const reason = document.getElementById('rpReason').value.trim();
+  const notes = document.getElementById('rpNotes').value.trim();
+
+  if (return_quantity <= 0) {
+    alert("Return quantity must be greater than zero.");
+    return;
+  }
+  if (!reason) {
+    alert("Please provide a reason for the return.");
+    return;
+  }
+
+  const btn = document.getElementById('rpSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Processing Return…';
+
+  try {
+    const res = await fetch(`/api/purchases/${purchId}/return`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purchase_item_id, return_quantity, return_date, reason, notes })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to process return');
+
+    alert(data.message || 'Stock returned to supplier successfully!');
+    closeReturnModal();
+    viewPurchaseDetails(purchId);
+    window.location.reload();
+  } catch (err) {
+    alert("Return Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Confirm Return';
+  }
 }
 
 // ── Edit Supplier Purchase Bill Modal ──
@@ -1078,7 +1316,7 @@ async function openEditPurchaseModal(purchId) {
     epRowCounter = 0;
 
     (data.items || []).forEach(it => {
-      addEditPurchaseRow(it.item_name, it.category, it.size_spec, it.quantity, it.unit_cost);
+      addEditPurchaseRow(it.item_name, it.category, it.size_spec, it.quantity, it.unit_cost, it.id, it.consumed_quantity, it.returned_quantity);
     });
 
     if (tbody.children.length === 0) {
@@ -1098,14 +1336,25 @@ function closeEditPurchaseModal() {
   document.getElementById('editPurchBackdrop').style.display = 'none';
 }
 
-function addEditPurchaseRow(name='', category='Paper', size='A4', qty=500, unitCost=0.50) {
+function addEditPurchaseRow(name='', category='Paper', size='A4', qty=500, unitCost=0.50, itemId=null, consumed=0, returned=0) {
   epRowCounter++;
   const tbody = document.getElementById('epItemsBody');
   const tr = document.createElement('tr');
   tr.id = `epRow_${epRowCounter}`;
+  if (itemId) tr.dataset.itemId = itemId;
+  tr.dataset.consumed = consumed || 0;
+  tr.dataset.returned = returned || 0;
+
+  const minQty = Math.max(1, (consumed || 0) + (returned || 0));
+  let constraintBadge = '';
+  if (consumed > 0 || returned > 0) {
+    constraintBadge = `<span style="font-size:10px; color:#b84a00; display:block; font-weight:700;">Min: ${minQty} (Billed: ${consumed}${returned>0 ? ', Ret: '+returned : ''})</span>`;
+  }
+
   tr.innerHTML = `
     <td>
-      <input type="text" class="ep-row-name" list="inventoryPresets" value="${name}" required oninput="calcEditRowTotal(this)" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+      <input type="text" class="ep-row-name" list="inventoryPresets" value="${escapeHtml(name)}" required oninput="calcEditRowTotal(this)" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+      ${constraintBadge}
     </td>
     <td>
       <select class="ep-row-cat" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:11px;">
@@ -1115,10 +1364,10 @@ function addEditPurchaseRow(name='', category='Paper', size='A4', qty=500, unitC
       </select>
     </td>
     <td>
-      <input type="text" class="ep-row-size" value="${size}" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:11px;">
+      <input type="text" class="ep-row-size" value="${escapeHtml(size)}" style="width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:11px;">
     </td>
     <td>
-      <input type="number" class="ep-row-qty" min="1" value="${qty}" required oninput="calcEditRowTotal(this)" style="width:100%; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-weight:700; font-size:12px;">
+      <input type="number" class="ep-row-qty" min="${minQty}" value="${qty}" required oninput="calcEditRowTotal(this)" style="width:100%; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-weight:700; font-size:12px;">
     </td>
     <td>
       <input type="number" step="0.001" min="0" class="ep-row-cost" value="${unitCost}" required oninput="calcEditRowTotal(this)" style="width:100%; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
@@ -1141,7 +1390,15 @@ function removeEditPurchaseRow(rowId) {
     return;
   }
   const el = document.getElementById(rowId);
-  if (el) el.remove();
+  if (el) {
+    const consumed = parseInt(el.dataset.consumed) || 0;
+    const returned = parseInt(el.dataset.returned) || 0;
+    if (consumed > 0 || returned > 0) {
+      alert(`Cannot remove this item: ${consumed} sheets have already been billed to customers and ${returned} sheets returned to supplier. Use Return to Supplier instead.`);
+      return;
+    }
+    el.remove();
+  }
   calcEditSummary();
 }
 
@@ -1198,8 +1455,9 @@ async function submitEditPurchase(e) {
     const size_spec = r.querySelector('.ep-row-size').value.trim();
     const quantity = parseInt(r.querySelector('.ep-row-qty').value) || 0;
     const unit_cost = parseFloat(r.querySelector('.ep-row-cost').value) || 0;
+    const itemId = r.dataset.itemId ? parseInt(r.dataset.itemId) : null;
     if (item_name && quantity > 0) {
-      items.push({ item_name, category, size_spec, quantity, unit_cost });
+      items.push({ id: itemId, item_name, category, size_spec, quantity, unit_cost });
     }
   });
 

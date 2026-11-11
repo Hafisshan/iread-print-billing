@@ -344,12 +344,10 @@ function updateModalAmount() {
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
   const isDouble = sides.toLowerCase().includes('double');
 
-  // Physical sheets calculation: Single = 1 sheet per copy, Double = 1 sheet per 2 copies (ceil(qty/2))
+  // Physical sheets calculation: 1 copy = 1 physical sheet for both single-side and double-side jobs
   let sheets = 0;
   if (currentItemConfig && currentItemConfig.type === 'service' && currentItemConfig.size === 'Digital') {
     sheets = 0;
-  } else if (isDouble) {
-    sheets = Math.ceil(qty / 2);
   } else {
     sheets = qty;
   }
