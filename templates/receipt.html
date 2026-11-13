@@ -5,6 +5,10 @@
   <a class="btn secondary" href="{{ url_for('index') }}">+ New bill</a>
   <button class="btn primary" onclick="window.print()">🖨 Print receipt</button>
   <a class="btn secondary" href="{{ url_for('history') }}">Bill history</a>
+  {% if is_admin %}
+  <button type="button" class="btn secondary" onclick="openEditBillModal({{ bill.id }})" style="background:#f3f0fa; border-color:#d4caed; color:var(--accent); font-weight:700;">✏️ Edit Bill</button>
+  <button type="button" class="btn secondary" onclick="openAuditHistoryModal({{ bill.id }})" style="background:#f3f0fa; border-color:#d4caed; font-weight:700;">📜 Edit History ({{ edit_count }})</button>
+  {% endif %}
 </div>
 
 <div class="receipt">
@@ -17,6 +21,16 @@
     <div><span>Bill No.</span><strong>{{ bill.bill_no }}</strong></div>
     <div><span>Date</span><strong>{{ bill.created_at[:19].replace('T',' ') }}</strong></div>
   </div>
+  {% if bill.original_created_at and bill.original_created_at != bill.created_at %}
+  <div class="small muted" style="font-size:11px; margin:-4px 0 6px; text-align:right;">
+    Original Entry: <strong>{{ bill.original_created_at[:19].replace('T',' ') }}</strong> (Corrected)
+  </div>
+  {% endif %}
+  {% if bill.biller_name %}
+  <div class="small muted" style="font-size:11px; margin:-4px 0 6px;">
+    Biller: <strong>{{ bill.biller_name }}</strong>
+  </div>
+  {% endif %}
 
   {% if bill.customer %}
     <p class="small" style="margin: 4px 0 8px;">Customer: <strong>{{ bill.customer }}</strong></p>
@@ -48,6 +62,9 @@
 
   <div class="receipt-totals">
     <div><span>Subtotal</span><strong>{{ bill.subtotal|inr }}</strong></div>
+    {% if bill.other_charges and bill.other_charges > 0 %}
+    <div><span>Other Charges</span><strong>+{{ bill.other_charges|inr }}</strong></div>
+    {% endif %}
     {% if bill.discount and bill.discount > 0 %}
     <div><span>Discount</span><strong>-{{ bill.discount|inr }}</strong></div>
     {% endif %}
@@ -56,6 +73,12 @@
     {% if bill.balance and bill.balance > 0 %}
     <div><span>Balance due</span><strong style="color:#b84a00;">{{ bill.balance|inr }}</strong></div>
     {% endif %}
+    {% if bill.paid > bill.total %}
+    <div style="background:#fff3cd; color:#856404; padding:5px 8px; border-radius:6px; font-size:12px; margin:6px 0; font-weight:700; display:flex; justify-content:space-between;">
+      <span>Excess Paid</span>
+      <span>{{ (bill.paid - bill.total)|inr }} (Refund/Adjust)</span>
+    </div>
+    {% endif %}
   </div>
 
   {% if bill.notes %}
@@ -63,6 +86,8 @@
   {% endif %}
   <p class="center small thanks">Thank you! Visit again.</p>
 </div>
+
+{% include "edit_bill_modal.html" %}
 
 {% if auto_print %}
 <script>

@@ -4,6 +4,7 @@ import psycopg2.extras
 from pathlib import Path
 from datetime import datetime, date, timedelta
 import os
+import json
 from functools import wraps
 from dotenv import load_dotenv
 
@@ -149,9 +150,14 @@ def init_db():
                     created_at TEXT NOT NULL
                 );
 
-                -- Migrations for Payment Status, Direct Printing & Audit
+                -- Migrations for Payment Status, Direct Printing, Bill Editing & Audit
                 ALTER TABLE bills ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'Paid';
                 ALTER TABLE bills ADD COLUMN IF NOT EXISTS is_deleted INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE bills ADD COLUMN IF NOT EXISTS original_created_at TEXT;
+                ALTER TABLE bills ADD COLUMN IF NOT EXISTS biller_name TEXT DEFAULT '';
+                ALTER TABLE bills ADD COLUMN IF NOT EXISTS other_charges REAL DEFAULT 0;
+                UPDATE bills SET original_created_at = created_at WHERE original_created_at IS NULL;
+                ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS inventory_id INTEGER REFERENCES inventory(id) ON DELETE SET NULL;
 
                 CREATE TABLE IF NOT EXISTS bill_payments (
                     id SERIAL PRIMARY KEY,
@@ -172,6 +178,11 @@ def init_db():
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                ALTER TABLE bill_audit_log ADD COLUMN IF NOT EXISTS original_values TEXT DEFAULT '';
+                ALTER TABLE bill_audit_log ADD COLUMN IF NOT EXISTS updated_values TEXT DEFAULT '';
+                ALTER TABLE bill_audit_log ADD COLUMN IF NOT EXISTS fields_changed TEXT DEFAULT '';
+                ALTER TABLE bill_audit_log ADD COLUMN IF NOT EXISTS reason TEXT DEFAULT '';
+                ALTER TABLE bill_audit_log ADD COLUMN IF NOT EXISTS original_created_at TEXT DEFAULT '';
 
                 CREATE TABLE IF NOT EXISTS purchases (
                     id SERIAL PRIMARY KEY,
@@ -1516,15 +1527,20 @@ def create_bill():
 @app.route("/receipt/<int:bill_id>")
 def receipt(bill_id):
     auto_print = (request.args.get("auto") == "1")
+    is_admin = bool(session.get("is_admin"))
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM bills WHERE id=%s", (bill_id,))
             bill = cur.fetchone()
-            cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (bill_id,))
+            if not bill:
+                return "Bill not found", 404
+            cur.execute("SELECT * FROM bill_items WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
             items = cur.fetchall()
-    if not bill:
-        return "Bill not found", 404
-    return render_template("receipt.html", bill=bill, items=items, auto_print=auto_print)
+            cur.execute("SELECT * FROM bill_payments WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
+            payments = cur.fetchall()
+            cur.execute("SELECT COUNT(*) AS c FROM bill_audit_log WHERE (bill_id=%s OR bill_no=%s) AND action='EDIT'", (bill_id, bill["bill_no"]))
+            edit_count = cur.fetchone()["c"]
+    return render_template("receipt.html", bill=bill, items=items, payments=payments, auto_print=auto_print, is_admin=is_admin, edit_count=edit_count)
 
 # ── API: High-Speed Billing Endpoint (Instant Save & Print) ──
 @app.post("/api/create-bill")
@@ -1723,7 +1739,7 @@ def create_bill_api():
             "receipt_url": receipt_url
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── Printer Configuration & Test Route (Admin) ──
 @app.route("/printer-settings", methods=["GET", "POST"])
@@ -1945,7 +1961,7 @@ def collect_bill_payment(bill_id):
             "message": f"Payment of {inr(new_amount)} recorded successfully."
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Bill Payments History ──
 @app.get("/api/bills/<int:bill_id>/payments")
@@ -1974,7 +1990,7 @@ def get_bill_payments(bill_id):
             "payments": payments
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Bill Details (Items & Payments for Modal) ──
 @app.get("/api/bills/<int:bill_id>/details")
@@ -2001,7 +2017,7 @@ def get_bill_details(bill_id):
             "is_admin": bool(session.get("is_admin"))
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Delete Bill (Admin only with stock return) ──
 @app.post("/api/bills/<int:bill_id>/delete")
@@ -2056,137 +2072,579 @@ def delete_bill(bill_id):
 
         return {"success": True, "message": f"Bill {bill['bill_no']} successfully deleted and {total_sheets_reversed} sheets returned to stock."}
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
-# ── API: Edit Bill (Admin only with stock reconciliation) ──
+# ── Calculation Helper for Bill Corrections & Previews ──
+def calculate_bill_corrections(cur, bill, old_items, data):
+    raw_items = data.get("items") or []
+    if not raw_items:
+        raise ValueError("Bill must contain at least one item.")
+
+    customer = (data.get("customer") or "").strip()
+    biller_name = (data.get("biller_name") or "").strip()
+    payment_method = data.get("payment_method") or "Cash"
+    discount = money(data.get("discount", 0))
+    other_charges = money(data.get("other_charges", 0))
+    reason = (data.get("reason") or "").strip()
+    new_created_at = (data.get("created_at") or bill["created_at"]).strip()
+
+    # Pre-fetch active inventory & services
+    cur.execute("""
+        SELECT id, item_name, size_spec, available_sheets, 
+               ROUND((cost / NULLIF(total_sheets, 0))::numeric, 4) AS cost_per_sheet
+        FROM inventory 
+        WHERE is_active = 1
+        FOR UPDATE
+    """)
+    inv_rows = cur.fetchall()
+    inv_map = {r['id']: dict(r) for r in inv_rows}
+    inv_by_name = {r['item_name'].strip().lower(): r['id'] for r in inv_rows}
+    inv_by_size = {}
+    for r in inv_rows:
+        key = (r['size_spec'] or '').strip().upper()
+        if key and key not in inv_by_size:
+            inv_by_size[key] = r['id']
+
+    cur.execute("SELECT id, name, rate, double_rate, print_type, paper_size, sheets_per_unit, paper_id FROM services")
+    services_rows = cur.fetchall()
+    serv_by_id = {s['id']: dict(s) for s in services_rows}
+    serv_by_name = {s['name'].strip().lower(): dict(s) for s in services_rows}
+
+    # Helper to resolve inventory id for an item
+    def resolve_inv_id(s_name, p_size, explicit_inv_id=None, service_id=None):
+        if explicit_inv_id and explicit_inv_id in inv_map:
+            return explicit_inv_id
+        if service_id and service_id in serv_by_id:
+            pid = serv_by_id[service_id].get("paper_id")
+            if pid and pid in inv_map:
+                return pid
+        s_obj = serv_by_name.get((s_name or '').strip().lower())
+        if s_obj and s_obj.get("paper_id") and s_obj["paper_id"] in inv_map:
+            return s_obj["paper_id"]
+        if (s_name or '').strip().lower() in inv_by_name:
+            return inv_by_name[(s_name or '').strip().lower()]
+        size_k = (p_size or '').strip().upper()
+        if size_k in inv_by_size:
+            return inv_by_size[size_k]
+        return None
+
+    # Step 1: Calculate old stock consumed per inventory ID
+    orig_stock_by_inv = {}
+    for o_it in old_items:
+        sheets = o_it.get("paper_sheets", 0)
+        if sheets > 0:
+            iid = o_it.get("inventory_id") or resolve_inv_id(o_it.get("service_name"), o_it.get("paper_size"))
+            if iid:
+                orig_stock_by_inv[iid] = orig_stock_by_inv.get(iid, 0) + sheets
+
+    # Step 2: Build new items and calculate new stock consumed per inventory ID
+    new_items = []
+    new_stock_by_inv = {}
+    subtotal = 0.0
+    total_paper_cost = 0.0
+
+    for it in raw_items:
+        s_name = (it.get("service_name") or it.get("name") or "Service").strip()
+        p_type = (it.get("print_type") or it.get("type") or "bw").strip()
+        p_size = (it.get("paper_size") or it.get("size") or "A4").strip()
+        qty = max(1, int(it.get("quantity") or it.get("qty") or 1))
+        pages_per_copy = max(1, int(it.get("pages_per_copy") or it.get("pages") or 1))
+        sides = (it.get("sides") or "Single").strip()
+        rate = money(it.get("rate", 0))
+
+        s_obj = serv_by_name.get(s_name.lower())
+        if rate <= 0.001 and s_obj:
+            is_double = sides.lower().startswith("double")
+            rate = s_obj["double_rate"] if (is_double and s_obj.get("double_rate")) else s_obj["rate"]
+
+        line_total = money(qty * pages_per_copy * rate)
+        subtotal += line_total
+
+        # Paper sheets calculation: 1 copy = 1 sheet for physical jobs
+        if "paper_sheets" in it and it["paper_sheets"] is not None and str(it["paper_sheets"]).strip() != "":
+            sheets = max(0, int(it["paper_sheets"]))
+        else:
+            sheets = 0 if (p_size.lower() == 'digital' or (s_obj and s_obj.get("sheets_per_unit") == 0)) else (qty * pages_per_copy)
+
+        target_inv_id = resolve_inv_id(s_name, p_size, it.get("inventory_id"), it.get("service_id"))
+        unit_cost = 0.0
+        if target_inv_id and target_inv_id in inv_map:
+            unit_cost = float(inv_map[target_inv_id]["cost_per_sheet"] or 0.0)
+
+        line_paper_cost = money(sheets * unit_cost) if sheets > 0 else 0.0
+        line_profit = money(line_total - line_paper_cost)
+        total_paper_cost += line_paper_cost
+
+        color_units = (qty * pages_per_copy) if p_type in ("color", "photo") else 0
+
+        new_items.append({
+            "service_name": s_name,
+            "print_type": p_type,
+            "paper_size": p_size,
+            "quantity": qty,
+            "pages_per_copy": pages_per_copy,
+            "sides": sides,
+            "rate": rate,
+            "line_total": line_total,
+            "paper_sheets": sheets,
+            "color_units": color_units,
+            "paper_cost": line_paper_cost,
+            "profit": line_profit,
+            "inventory_id": target_inv_id
+        })
+
+        if target_inv_id and sheets > 0:
+            new_stock_by_inv[target_inv_id] = new_stock_by_inv.get(target_inv_id, 0) + sheets
+
+    # Step 3: Stock impact calculation and negative stock validation
+    all_affected_inv_ids = set(orig_stock_by_inv.keys()) | set(new_stock_by_inv.keys())
+    stock_impacts = []
+    has_stock_error = False
+
+    for iid in sorted(all_affected_inv_ids):
+        inv_item = inv_map.get(iid)
+        inv_name = inv_item["item_name"] if inv_item else f"Paper Item #{iid}"
+        cur_avail = inv_item["available_sheets"] if inv_item else 0
+        orig_used = orig_stock_by_inv.get(iid, 0)
+        new_used = new_stock_by_inv.get(iid, 0)
+        net_diff = orig_used - new_used  # > 0 means returning to stock, < 0 means deducting additional
+        new_avail = cur_avail + net_diff
+
+        err = None
+        if new_avail < 0:
+            has_stock_error = True
+            err = f"Insufficient stock for '{inv_name}'. Current available: {cur_avail} sheets. Additional required: {abs(net_diff)} sheets. Available after reversing original bill: {cur_avail + orig_used} sheets."
+
+        stock_impacts.append({
+            "inventory_id": iid,
+            "item_name": inv_name,
+            "current_available": cur_avail,
+            "original_consumed": orig_used,
+            "new_consumed": new_used,
+            "net_difference": net_diff,
+            "new_available": new_avail,
+            "error": err
+        })
+
+    # Step 4: Financial recalculations
+    subtotal = money(subtotal)
+    other_charges = money(max(0.0, other_charges))
+    discount = money(min(max(0.0, discount), subtotal + other_charges))
+    final_total = money(subtotal + other_charges - discount)
+    total_paper_cost = money(total_paper_cost)
+    profit = money(final_total - total_paper_cost)
+
+    # Step 5: Payments & Balances
+    cur.execute("SELECT COALESCE(SUM(amount), 0) AS paid_sum FROM bill_payments WHERE bill_id = %s", (bill["id"],))
+    payments_sum = money(cur.fetchone()["paid_sum"])
+    paid_amount = payments_sum if payments_sum > 0 else money(bill.get("paid", 0))
+
+    balance_diff = money(final_total - paid_amount)
+    if balance_diff <= 0.001:
+        new_balance = 0.0
+        excess_amount = money(paid_amount - final_total) if paid_amount > final_total else 0.0
+        new_status = "Paid"
+    else:
+        new_balance = balance_diff
+        excess_amount = 0.0
+        new_status = "Partially Paid" if paid_amount > 0 else "Unpaid"
+
+    return {
+        "customer": customer,
+        "biller_name": biller_name,
+        "payment_method": payment_method,
+        "subtotal": subtotal,
+        "other_charges": other_charges,
+        "discount": discount,
+        "total": final_total,
+        "total_paper_cost": total_paper_cost,
+        "profit": profit,
+        "paid_amount": paid_amount,
+        "balance": new_balance,
+        "excess_amount": excess_amount,
+        "payment_status": new_status,
+        "new_created_at": new_created_at,
+        "reason": reason,
+        "new_items": new_items,
+        "stock_impacts": stock_impacts,
+        "has_stock_error": has_stock_error
+    }
+
+
+# ── API: Inspect Bill for Editing (Admin only) ──
+@app.get("/api/bills/<int:bill_id>/edit-details")
+@admin_required
+def get_bill_edit_details(bill_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found or deleted."}, 404
+
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
+                items = cur.fetchall()
+
+                cur.execute("SELECT * FROM bill_payments WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
+                payments = cur.fetchall()
+
+                cur.execute("SELECT id, name, rate, double_rate, print_type, paper_size, sheets_per_unit, paper_id FROM services WHERE active=1 ORDER BY name")
+                services = cur.fetchall()
+
+                cur.execute("SELECT id, item_name, size_spec, available_sheets, ROUND((cost / NULLIF(total_sheets, 0))::numeric, 4) AS cost_per_sheet FROM inventory WHERE is_active=1 ORDER BY item_name")
+                inventory = cur.fetchall()
+
+                cur.execute("SELECT * FROM bill_audit_log WHERE bill_id=%s OR bill_no=%s ORDER BY id DESC", (bill_id, bill["bill_no"]))
+                audit_logs = cur.fetchall()
+
+        return {
+            "success": True,
+            "bill": dict(bill),
+            "items": [dict(it) for it in items],
+            "payments": [dict(p) for p in payments],
+            "services": [dict(s) for s in services],
+            "inventory": [dict(i) for i in inventory],
+            "audit_logs": [dict(a) for a in audit_logs]
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 400
+
+
+# ── API: Preview Bill Corrections & Confirmation Summary (Admin only) ──
+@app.post("/api/bills/<int:bill_id>/edit-preview")
+@admin_required
+def edit_bill_preview(bill_id):
+    try:
+        data = request.get_json(force=True) or {}
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0 FOR UPDATE", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found or deleted."}, 404
+
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (bill_id,))
+                old_items = cur.fetchall()
+
+                calc = calculate_bill_corrections(cur, bill, old_items, data)
+
+        # Build comparison summary table
+        orig_sheets = sum(o.get("paper_sheets", 0) for o in old_items)
+        new_sheets = sum(n.get("paper_sheets", 0) for n in calc["new_items"])
+
+        orig_dt = bill["created_at"][:19].replace("T", " ")
+        new_dt = calc["new_created_at"][:19].replace("T", " ")
+
+        summary_rows = [
+            {
+                "field": "Bill Date & Time",
+                "original": orig_dt,
+                "corrected": new_dt,
+                "is_changed": orig_dt != new_dt
+            },
+            {
+                "field": "Customer Name",
+                "original": bill["customer"] or "(None)",
+                "corrected": calc["customer"] or "(None)",
+                "is_changed": (bill["customer"] or "") != calc["customer"]
+            },
+            {
+                "field": "Biller / Staff",
+                "original": bill.get("biller_name") or "Staff",
+                "corrected": calc["biller_name"] or "Staff",
+                "is_changed": (bill.get("biller_name") or "") != calc["biller_name"]
+            },
+            {
+                "field": "Subtotal",
+                "original": inr(bill["subtotal"]),
+                "corrected": inr(calc["subtotal"]),
+                "is_changed": money(bill["subtotal"]) != calc["subtotal"]
+            },
+            {
+                "field": "Other Charges",
+                "original": inr(bill.get("other_charges", 0)),
+                "corrected": inr(calc["other_charges"]),
+                "is_changed": money(bill.get("other_charges", 0)) != calc["other_charges"]
+            },
+            {
+                "field": "Discount",
+                "original": inr(bill.get("discount", 0)),
+                "corrected": inr(calc["discount"]),
+                "is_changed": money(bill.get("discount", 0)) != calc["discount"]
+            },
+            {
+                "field": "Final Bill Amount",
+                "original": inr(bill["total"]),
+                "corrected": inr(calc["total"]),
+                "is_changed": money(bill["total"]) != calc["total"]
+            },
+            {
+                "field": "Paper Sheet Consumption",
+                "original": f"{orig_sheets} sheets",
+                "corrected": f"{new_sheets} sheets",
+                "is_changed": orig_sheets != new_sheets
+            },
+            {
+                "field": "Already Paid (Preserved)",
+                "original": inr(calc["paid_amount"]),
+                "corrected": inr(calc["paid_amount"]),
+                "is_changed": False
+            },
+            {
+                "field": "Outstanding Balance Due",
+                "original": inr(bill["balance"]),
+                "corrected": inr(calc["balance"]),
+                "is_changed": money(bill["balance"]) != calc["balance"]
+            }
+        ]
+
+        warnings = []
+        if calc["excess_amount"] > 0:
+            warnings.append(f"Excess payment detected: Bill total (₹{calc['total']}) is less than already collected amount (₹{calc['paid_amount']}). Excess payment of ₹{calc['excess_amount']} requires store reconciliation.")
+
+        if calc["has_stock_error"]:
+            for si in calc["stock_impacts"]:
+                if si["error"]:
+                    warnings.append(si["error"])
+
+        return {
+            "success": True,
+            "bill_no": bill["bill_no"],
+            "summary_rows": summary_rows,
+            "stock_impacts": calc["stock_impacts"],
+            "warnings": warnings,
+            "can_save": not calc["has_stock_error"],
+            "excess_amount": calc["excess_amount"],
+            "calc": calc
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 400
+
+
+# ── API: Apply Confirmed Bill Corrections (Admin only with rollback) ──
 @app.post("/api/bills/<int:bill_id>/edit")
 @admin_required
 def edit_bill(bill_id):
     try:
         data = request.get_json(force=True) or {}
-        customer = (data.get("customer") or "").strip()
-        payment_method = data.get("payment_method") or "Cash"
-        discount = money(data.get("discount", 0))
-        notes = (data.get("notes") or "").strip()
-        raw_items = data.get("items") or []
         now_iso = datetime.now().isoformat(timespec="seconds")
-
-        if not raw_items:
-            return {"success": False, "error": "Bill must contain at least one item."}, 400
+        today_iso = date.today().isoformat()
+        user_name = session.get("user") or "Admin"
 
         with db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0 FOR UPDATE", (bill_id,))
                 bill = cur.fetchone()
                 if not bill:
-                    return {"success": False, "error": "Bill not found."}, 404
+                    return {"success": False, "error": "Bill not found or deleted."}, 404
 
-                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (bill_id,))
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
                 old_items = cur.fetchall()
 
-                # Step A: Return old items' sheets to inventory
-                for o_it in old_items:
-                    sheets = o_it.get("paper_sheets", 0)
-                    if sheets > 0:
-                        cur.execute("SELECT id, available_sheets FROM inventory WHERE size_spec ILIKE %s LIMIT 1", (o_it["paper_size"],))
-                        inv_row = cur.fetchone()
-                        if inv_row:
-                            new_avail = inv_row["available_sheets"] + sheets
-                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, inv_row["id"]))
-                            cur.execute("""
-                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
-                            VALUES (%s, 'RETURN', %s, %s, %s, 'Edit reversal', %s)
-                            """, (inv_row["id"], sheets, new_avail, bill["bill_no"], now_iso))
+                # Calculate corrections & validate stock
+                calc = calculate_bill_corrections(cur, bill, old_items, data)
+                if calc["has_stock_error"]:
+                    errors = [si["error"] for si in calc["stock_impacts"] if si["error"]]
+                    conn.rollback()
+                    return {"success": False, "error": "; ".join(errors)}, 400
 
-                # Step B: Delete old bill items
+                # Step A: Apply stock inventory adjustments & record in movement ledger
+                for si in calc["stock_impacts"]:
+                    net_diff = si["net_difference"]
+                    iid = si["inventory_id"]
+                    new_avail = si["new_available"]
+                    cur_avail = si["current_available"]
+
+                    if net_diff != 0:
+                        cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, iid))
+
+                        if net_diff > 0:
+                            # Sheets returned to stock
+                            m_notes = f"Bill {bill['bill_no']} edit: {net_diff} sheets returned to stock ({calc['reason']})"
+                            cur.execute("""
+                                INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+                                VALUES (%s, 'RETURN', %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (iid, net_diff, cur_avail, new_avail, bill["bill_no"], m_notes, user_name, today_iso, now_iso))
+                        else:
+                            # Additional sheets consumed
+                            m_notes = f"Bill {bill['bill_no']} edit: {abs(net_diff)} additional sheets consumed ({calc['reason']})"
+                            cur.execute("""
+                                INSERT INTO stock_movements (item_id, movement_type, quantity, previous_balance, balance_after, reference_id, notes, recorded_by, movement_date, created_at)
+                                VALUES (%s, 'SALE', %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (iid, net_diff, cur_avail, new_avail, bill["bill_no"], m_notes, user_name, today_iso, now_iso))
+
+                # Step B: Delete old items & insert corrected items
                 cur.execute("DELETE FROM bill_items WHERE bill_id=%s", (bill_id,))
-
-                # Step C: Re-calculate new items, sheets, costs, totals
-                cur.execute("""
-                SELECT id, item_name, size_spec, available_sheets, 
-                       ROUND((cost / NULLIF(total_sheets,0))::numeric, 4) AS cost_per_sheet
-                FROM inventory
-                WHERE is_active = 1
-                """)
-                inv_rows = cur.fetchall()
-                inv_by_size = { (r['size_spec'] or '').strip().upper(): (r['id'], float(r['cost_per_sheet'] or 0.0)) for r in inv_rows }
-
-                subtotal = 0.0
-                total_paper_cost = 0.0
-
-                for it in raw_items:
-                    s_name = (it.get("name") or "Service").strip()
-                    p_type = (it.get("type") or "bw").strip()
-                    p_size = (it.get("size") or "A4").strip()
-                    qty = max(1, int(it.get("qty", 1)))
-                    sides = it.get("sides") or "Single"
-                    rate = money(it.get("rate", 0))
-                    line_total = money(qty * rate)
-
-                    is_double = sides.lower().startswith("double")
-                    sheets = qty if (p_size.lower() != 'digital') else 0
-
-                    unit_cost = 0.0
-                    target_inv_id = None
-                    size_key = p_size.upper()
-                    if size_key in inv_by_size and sheets > 0:
-                        target_inv_id, unit_cost = inv_by_size[size_key]
-
-                    line_paper_cost = money(sheets * unit_cost) if sheets > 0 else 0.0
-                    line_profit = money(line_total - line_paper_cost)
-                    total_paper_cost += line_paper_cost
-                    subtotal += line_total
-
+                for x in calc["new_items"]:
                     cur.execute("""
-                        INSERT INTO bill_items (bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit)
-                        VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, 0, %s, %s)
-                    """, (bill_id, s_name, p_type, p_size, qty, sides, rate, line_total, sheets, line_paper_cost, line_profit))
+                        INSERT INTO bill_items (bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit, inventory_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
+                          x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"], x["inventory_id"]))
 
-                    # Deduct new sheets from inventory
-                    if target_inv_id and sheets > 0:
-                        cur.execute("SELECT available_sheets FROM inventory WHERE id=%s FOR UPDATE", (target_inv_id,))
-                        inv_now = cur.fetchone()
-                        if inv_now:
-                            new_avail = max(0, inv_now["available_sheets"] - sheets)
-                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, target_inv_id))
-                            cur.execute("""
-                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
-                            VALUES (%s, 'SALE', %s, %s, %s, 'Edit deduction', %s)
-                            """, (target_inv_id, -sheets, new_avail, bill["bill_no"], now_iso))
+                # Step C: Detect changed fields for audit log
+                changed_fields = []
+                if (calc["new_created_at"] or "")[:19] != (bill["created_at"] or "")[:19]:
+                    changed_fields.append("date/time")
+                if calc["customer"] != (bill.get("customer") or ""):
+                    changed_fields.append("customer")
+                if calc["biller_name"] != (bill.get("biller_name") or ""):
+                    changed_fields.append("biller")
+                if calc["subtotal"] != money(bill["subtotal"]):
+                    changed_fields.append("subtotal")
+                if calc["other_charges"] != money(bill.get("other_charges", 0)):
+                    changed_fields.append("other_charges")
+                if calc["discount"] != money(bill.get("discount", 0)):
+                    changed_fields.append("discount")
+                if calc["total"] != money(bill["total"]):
+                    changed_fields.append("total")
+                if calc["balance"] != money(bill["balance"]):
+                    changed_fields.append("balance")
+                if calc["payment_status"] != (bill.get("payment_status") or "Paid"):
+                    changed_fields.append("payment_status")
 
-                subtotal = money(subtotal)
-                discount = min(max(discount, 0), subtotal)
-                total = money(subtotal - discount)
-                total_paper_cost = money(total_paper_cost)
-                profit = money(total - total_paper_cost)
+                orig_total_sheets = sum(o.get("paper_sheets", 0) for o in old_items)
+                new_total_sheets = sum(n["paper_sheets"] for n in calc["new_items"])
+                if orig_total_sheets != new_total_sheets or len(old_items) != len(calc["new_items"]):
+                    changed_fields.append("items/sheets")
 
-                cur_paid = money(bill["paid"])
-                new_balance = max(0.0, money(total - cur_paid))
-                if cur_paid <= 0:
-                    new_status = "Unpaid"
-                elif new_balance <= 0.001:
-                    new_status = "Paid"
-                else:
-                    new_status = "Partially Paid"
+                orig_created_at = bill.get("original_created_at") or bill["created_at"]
 
+                # Step D: Update bill master record
                 cur.execute("""
-                    UPDATE bills 
-                    SET customer=%s, payment_method=%s, subtotal=%s, discount=%s, total=%s, balance=%s,
-                        paper_cost=%s, profit=%s, payment_status=%s, notes=%s
+                    UPDATE bills
+                    SET customer=%s,
+                        biller_name=%s,
+                        payment_method=%s,
+                        subtotal=%s,
+                        discount=%s,
+                        other_charges=%s,
+                        total=%s,
+                        paid=%s,
+                        balance=%s,
+                        paper_cost=%s,
+                        profit=%s,
+                        payment_status=%s,
+                        created_at=%s,
+                        original_created_at=%s
                     WHERE id=%s
-                """, (customer, payment_method, subtotal, discount, total, new_balance, total_paper_cost, profit, new_status, notes, bill_id))
+                """, (calc["customer"], calc["biller_name"], calc["payment_method"], calc["subtotal"],
+                      calc["discount"], calc["other_charges"], calc["total"], calc["paid_amount"],
+                      calc["balance"], calc["total_paper_cost"], calc["profit"], calc["payment_status"],
+                      calc["new_created_at"], orig_created_at, bill_id))
 
-                audit_details = f"Bill {bill['bill_no']} edited. New Total: ₹{total}, Balance: ₹{new_balance}, Status: {new_status}."
+                # Step E: Store audit snapshot
+                orig_snapshot = {
+                    "bill_no": bill["bill_no"],
+                    "created_at": bill["created_at"],
+                    "customer": bill["customer"],
+                    "biller_name": bill.get("biller_name", ""),
+                    "payment_method": bill["payment_method"],
+                    "subtotal": bill["subtotal"],
+                    "discount": bill.get("discount", 0),
+                    "other_charges": bill.get("other_charges", 0),
+                    "total": bill["total"],
+                    "paid": calc["paid_amount"],
+                    "balance": bill["balance"],
+                    "paper_cost": bill.get("paper_cost", 0),
+                    "profit": bill.get("profit", 0),
+                    "payment_status": bill.get("payment_status", "Paid"),
+                    "items": [dict(o) for o in old_items]
+                }
+                new_snapshot = {
+                    "bill_no": bill["bill_no"],
+                    "created_at": calc["new_created_at"],
+                    "customer": calc["customer"],
+                    "biller_name": calc["biller_name"],
+                    "payment_method": calc["payment_method"],
+                    "subtotal": calc["subtotal"],
+                    "discount": calc["discount"],
+                    "other_charges": calc["other_charges"],
+                    "total": calc["total"],
+                    "paid": calc["paid_amount"],
+                    "balance": calc["balance"],
+                    "excess_amount": calc["excess_amount"],
+                    "paper_cost": calc["total_paper_cost"],
+                    "profit": calc["profit"],
+                    "payment_status": calc["payment_status"],
+                    "items": calc["new_items"],
+                    "stock_impacts": calc["stock_impacts"]
+                }
+
+                audit_details = f"Bill {bill['bill_no']} edited by {user_name}. Reason: {calc['reason']}. Total: ₹{bill['total']} -> ₹{calc['total']}."
+                if (calc["new_created_at"] or "")[:19] != (bill["created_at"] or "")[:19]:
+                    audit_details += f" Date: {bill['created_at'][:19]} -> {calc['new_created_at'][:19]}."
+
                 cur.execute("""
-                    INSERT INTO bill_audit_log (bill_id, bill_no, action, performed_by, details, created_at)
-                    VALUES (%s, %s, 'EDIT', 'Admin', %s, %s)
-                """, (bill_id, bill["bill_no"], audit_details, now_iso))
+                    INSERT INTO bill_audit_log (
+                        bill_id, bill_no, action, performed_by, details, created_at,
+                        original_values, updated_values, fields_changed, reason, original_created_at
+                    )
+                    VALUES (%s, %s, 'EDIT', %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    bill["id"], bill["bill_no"], user_name, audit_details, now_iso,
+                    json.dumps(orig_snapshot, default=str),
+                    json.dumps(new_snapshot, default=str),
+                    ", ".join(changed_fields) if changed_fields else "minor corrections",
+                    calc["reason"],
+                    orig_created_at
+                ))
 
             conn.commit()
 
-        return {"success": True, "message": f"Bill {bill['bill_no']} updated successfully."}
+        return {
+            "success": True,
+            "message": f"Bill {bill['bill_no']} successfully updated and stock reconciled.",
+            "bill_no": bill["bill_no"]
+        }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
+
+
+# ── API: View Edit & Audit History for a Bill ──
+@app.get("/api/bills/<int:bill_id>/audit")
+@admin_required
+def get_bill_audit(bill_id):
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT bill_no, original_created_at, created_at FROM bills WHERE id=%s", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found"}, 404
+
+                cur.execute("""
+                    SELECT id, bill_id, bill_no, action, performed_by, details, created_at,
+                           fields_changed, reason, original_created_at, original_values, updated_values
+                    FROM bill_audit_log 
+                    WHERE bill_id=%s OR bill_no=%s 
+                    ORDER BY id DESC
+                """, (bill_id, bill["bill_no"]))
+                logs = cur.fetchall()
+
+        parsed_logs = []
+        for r in logs:
+            row_dict = dict(r)
+            try:
+                row_dict["original_values_parsed"] = json.loads(row_dict.get("original_values") or "{}")
+            except Exception:
+                row_dict["original_values_parsed"] = {}
+            try:
+                row_dict["updated_values_parsed"] = json.loads(row_dict.get("updated_values") or "{}")
+            except Exception:
+                row_dict["updated_values_parsed"] = {}
+            parsed_logs.append(row_dict)
+
+        return {
+            "success": True,
+            "bill_no": bill["bill_no"],
+            "original_created_at": bill.get("original_created_at") or bill["created_at"],
+            "current_created_at": bill["created_at"],
+            "logs": parsed_logs
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Record Supplier Purchase Payment (Admin only) ──
 @app.post("/api/purchases/<int:purchase_id>/pay")
@@ -2241,7 +2699,7 @@ def pay_supplier_purchase(purchase_id):
             "message": f"Supplier payment of {inr(new_amount)} recorded."
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Get Supplier Purchase Payments ──
 @app.get("/api/purchases/<int:purchase_id>/payments")
@@ -2259,7 +2717,7 @@ def get_purchase_payments(purchase_id):
 
         return {"success": True, "purchase": purch, "payments": payments}
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Create Supplier Purchase (Multi-Item) ──
 @app.post("/api/purchases")
@@ -2329,7 +2787,7 @@ def api_get_purchase_details(purchase_id):
             "audit_logs": [dict(al) for al in audit_logs]
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Return Paper Stock to Supplier (Admin only) ──
 @app.post("/api/purchases/<int:purchase_id>/return")
@@ -2408,7 +2866,7 @@ def api_audit_double_sided():
             "discrepancies": [dict(d) for d in discrepancies[:100]]
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 
 @app.post("/api/inventory/reconcile-double-sided")
@@ -2496,7 +2954,7 @@ def api_reconcile_double_sided():
             "message": f"Successfully reconciled {reconciled_sheets} sheets across {reconciled_items} double-sided line items."
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Edit Supplier Purchase (Admin only with stock reconciliation) ──
 @app.post("/api/purchases/<int:purchase_id>/edit")
@@ -2643,7 +3101,7 @@ def api_inventory_removal_info(item_id):
                     "available_sheets": item["available_sheets"] or 0
                 }
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return {"success": False, "error": str(e)}, 400
 
 # ── API: Safe Remove / Archive Inventory Item (Admin only) ──
 @app.post("/api/inventory/<int:item_id>/remove")

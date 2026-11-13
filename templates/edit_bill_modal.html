@@ -1,0 +1,731 @@
+<!-- ── EDIT BILL & CONFIRMATION MODAL (Admin Only) ── -->
+{% if is_admin %}
+<div class="modal-backdrop" id="editModalBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeEditModal()"></div>
+<div class="item-modal" id="editBillModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:95%; max-width:820px; max-height:92vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:24px; box-shadow:0 12px 45px rgba(0,0,0,0.25);">
+
+  <!-- STEP 1: EDIT FORM VIEW -->
+  <div id="editFormStep">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1.5px solid var(--line); padding-bottom:10px;">
+      <div>
+        <h3 style="margin:0; font-size:18px; font-weight:800; color:var(--ink);">Edit Bill &amp; Reconcile Stock</h3>
+        <span class="muted" style="font-size:12px;">Bill No: <strong id="editBillNo" style="color:var(--accent);"></strong> · Orig Entry: <span id="editOrigDateDisplay"></span></span>
+      </div>
+      <button type="button" class="modal-close" onclick="closeEditModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+    </div>
+
+    <form id="editBillForm" onsubmit="handleReviewClick(event)">
+      <input type="hidden" id="editBillId">
+
+      <!-- Top Metadata Grid -->
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; margin-bottom:14px; background:#faf8fc; padding:12px; border-radius:10px; border:1px solid var(--line);">
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Bill Date &amp; Time *</label>
+          <input type="datetime-local" id="editDateTime" required style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Customer Name</label>
+          <input type="text" id="editCustomer" placeholder="Walk-in Customer" style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px;">
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Biller / Staff</label>
+          <input type="text" id="editBillerName" placeholder="Admin" style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px;">
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Payment Method</label>
+          <select id="editPaymentMethod" style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
+            <option value="Cash">Cash</option>
+            <option value="UPI">UPI / GPay</option>
+            <option value="Card">Card</option>
+            <option value="Credit">Credit (Pay Later)</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Bill Items Table -->
+      <div style="margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <label style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--ink);">Bill Items &amp; Sheet Quantities</label>
+          <button type="button" class="btn tiny secondary" onclick="addEditItemRow()" style="font-weight:700;">+ Add Item</button>
+        </div>
+
+        <div style="border:1.5px solid var(--line); border-radius:10px; overflow:hidden;">
+          <table style="width:100%; font-size:12px; margin:0;" id="editItemsTable">
+            <thead>
+              <tr style="background:var(--soft);">
+                <th style="width:26%;">Service / Description</th>
+                <th style="width:13%;">Side</th>
+                <th style="width:11%; text-align:center;">Copies</th>
+                <th style="width:11%; text-align:center;">Pages</th>
+                <th style="width:12%; text-align:center;">Sheets</th>
+                <th style="width:12%; text-align:right;">Rate ₹</th>
+                <th style="width:13%; text-align:right;">Total ₹</th>
+                <th style="width:30px;"></th>
+              </tr>
+            </thead>
+            <tbody id="editItemsTbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Financials & Extra Charges -->
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px;">Other Bill Charges ₹ (Binding, Scanning, Delivery, etc.)</label>
+          <input type="number" id="editOtherCharges" step="0.01" min="0" value="0.00" oninput="recalcEditTotals()" style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px;">Discount ₹</label>
+          <input type="number" id="editDiscount" step="0.01" min="0" value="0.00" oninput="recalcEditTotals()" style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
+        </div>
+      </div>
+
+      <!-- Totals & Balances Summary Card -->
+      <div style="background:#faf8fc; border:1.5px solid var(--line); border-radius:10px; padding:12px 16px; margin-bottom:14px; display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; text-align:center;">
+        <div>
+          <span style="font-size:10px; color:var(--muted); text-transform:uppercase; display:block;">Subtotal</span>
+          <strong id="editSubtotalDisplay" style="font-size:13px;">₹0.00</strong>
+        </div>
+        <div>
+          <span style="font-size:10px; color:var(--muted); text-transform:uppercase; display:block;">Other Charges</span>
+          <strong id="editOtherDisplay" style="font-size:13px;">+₹0.00</strong>
+        </div>
+        <div>
+          <span style="font-size:10px; color:var(--muted); text-transform:uppercase; display:block;">Discount</span>
+          <strong id="editDiscountDisplay" style="font-size:13px; color:#c81e1e;">-₹0.00</strong>
+        </div>
+        <div>
+          <span style="font-size:10px; color:var(--muted); text-transform:uppercase; display:block;">Final Bill</span>
+          <strong id="editTotalDisplay" style="font-size:16px; color:var(--accent);">₹0.00</strong>
+        </div>
+        <div>
+          <span style="font-size:10px; color:var(--muted); text-transform:uppercase; display:block;">Already Paid</span>
+          <strong id="editPaidDisplay" style="font-size:13px; color:var(--green);">₹0.00</strong>
+        </div>
+        <div>
+          <span style="font-size:10px; color:var(--muted); text-transform:uppercase; display:block;">Balance Due</span>
+          <strong id="editBalanceDisplay" style="font-size:14px; color:#b84a00;">₹0.00</strong>
+        </div>
+      </div>
+
+      <!-- Excess Payment Warning (If Overpaid) -->
+      <div id="editExcessPaidAlert" style="display:none; background:#fff8f0; border:1.5px solid #fed7aa; padding:10px 14px; border-radius:8px; font-size:12px; color:#9a3412; margin-bottom:14px;">
+        ⚠️ <strong>Excess Payment Detected:</strong> The corrected bill amount is less than the amount already collected (Paid: <span id="excessPaidNum"></span>). The customer balance is set to ₹0.00, and an excess payment of <strong id="excessAmountNum"></strong> will require store reconciliation.
+      </div>
+
+      <!-- Correction Reason Input -->
+      <div style="margin-bottom:16px;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; color:var(--ink);">Reason for Correction <span style="color:#c81e1e;">*</span></label>
+        <input type="text" id="editReason" placeholder="e.g. Corrected sheet count and wrong entry date" required style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" class="btn secondary" onclick="closeEditModal()">Cancel</button>
+        <button type="submit" class="btn primary" id="reviewEditBtn" style="font-weight:700; padding:10px 20px;">
+          Review Correction Summary &rarr;
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- STEP 2: CONFIRMATION SUMMARY VIEW (Before Saving) -->
+  <div id="editConfirmStep" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1.5px solid var(--line); padding-bottom:10px;">
+      <h3 style="margin:0; font-size:18px; font-weight:800; color:var(--ink);">Confirm Bill Corrections</h3>
+      <button type="button" class="modal-close" onclick="closeEditModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+    </div>
+
+    <p style="font-size:13px; color:var(--muted); margin-bottom:14px;">
+      Please review the exact differences between the original saved bill and your corrected entry before saving.
+    </p>
+
+    <!-- Confirmation Comparison Table -->
+    <div style="border:1.5px solid var(--line); border-radius:12px; overflow:hidden; margin-bottom:16px;">
+      <table style="width:100%; font-size:13px; margin:0;">
+        <thead>
+          <tr style="background:var(--soft);">
+            <th style="width:28%;">Field / Metric</th>
+            <th style="width:34%;">Original Saved Value</th>
+            <th style="width:38%;">Corrected Value</th>
+          </tr>
+        </thead>
+        <tbody id="confirmTableBody">
+          <!-- Populated dynamically via JS -->
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Stock Impact Breakdown Box -->
+    <div id="confirmStockImpactBox" style="background:#f4f9f7; border:1.5px solid #c6f6d5; border-radius:10px; padding:12px 16px; margin-bottom:14px;">
+      <strong style="font-size:12px; text-transform:uppercase; color:#22543d; display:block; margin-bottom:6px;">
+        📦 Automatic Stock Inventory Reconciliations
+      </strong>
+      <div id="confirmStockList" style="font-size:12px; color:#276749;"></div>
+    </div>
+
+    <!-- Warnings Box (if any) -->
+    <div id="confirmWarningsBox" style="display:none; margin-bottom:14px;"></div>
+
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <button type="button" class="btn secondary" onclick="backToEditForm()" style="font-weight:700;">
+        &larr; Back to Edit
+      </button>
+      <button type="button" class="btn primary" id="finalSaveBtn" onclick="submitConfirmedBillEdit()" style="font-weight:800; padding:10px 24px;">
+        Confirm &amp; Apply Corrections
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── AUDIT HISTORY MODAL (Admin Only) ── -->
+<div class="modal-backdrop" id="auditModalBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1002;" onclick="closeAuditModal()"></div>
+<div class="item-modal" id="auditHistoryModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:95%; max-width:760px; max-height:90vh; overflow-y:auto; z-index:1003; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;">
+    <div>
+      <h3 style="margin:0; font-size:17px; font-weight:800;">Bill Edit &amp; Audit Trail</h3>
+      <span class="muted" style="font-size:12px;">Bill No: <strong id="auditBillNoDisplay" style="color:var(--accent);"></strong></span>
+    </div>
+    <button type="button" class="modal-close" onclick="closeAuditModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+  </div>
+
+  <div id="auditLogContent" style="font-size:13px;">
+    <div id="auditLoading" style="text-align:center; padding:20px; color:var(--muted);">Loading audit logs…</div>
+    <div id="auditLogsList"></div>
+  </div>
+</div>
+
+<script>
+let editCurrentBill = null;
+let editOriginalItems = [];
+let editAvailableServices = [];
+let editActiveInventory = [];
+let editPendingPayload = null;
+let editRowCounter = 0;
+
+function fmt(n) {
+  return '₹' + Number(n || 0).toFixed(2);
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function openEditBillModal(billId) {
+  try {
+    const res = await fetch(`/api/bills/${billId}/edit-details`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to fetch bill details');
+
+    editCurrentBill = data.bill;
+    editOriginalItems = data.items || [];
+    editAvailableServices = data.services || [];
+    editActiveInventory = data.inventory || [];
+    editRowCounter = 0;
+
+    document.getElementById('editBillId').value = editCurrentBill.id;
+    document.getElementById('editBillNo').textContent = editCurrentBill.bill_no;
+    
+    const origDt = editCurrentBill.original_created_at || editCurrentBill.created_at;
+    document.getElementById('editOrigDateDisplay').textContent = origDt.slice(0, 19).replace('T', ' ');
+
+    // Format datetime-local string (YYYY-MM-DDTHH:MM)
+    let dtVal = editCurrentBill.created_at || '';
+    if (dtVal.length >= 16) {
+      dtVal = dtVal.slice(0, 16);
+    }
+    document.getElementById('editDateTime').value = dtVal;
+    document.getElementById('editCustomer').value = editCurrentBill.customer || '';
+    document.getElementById('editBillerName').value = editCurrentBill.biller_name || '';
+    document.getElementById('editPaymentMethod').value = editCurrentBill.payment_method || 'Cash';
+    document.getElementById('editOtherCharges').value = Number(editCurrentBill.other_charges || 0).toFixed(2);
+    document.getElementById('editDiscount').value = Number(editCurrentBill.discount || 0).toFixed(2);
+    document.getElementById('editReason').value = '';
+
+    // Populate rows
+    const tbody = document.getElementById('editItemsTbody');
+    tbody.innerHTML = '';
+
+    if (editOriginalItems.length > 0) {
+      editOriginalItems.forEach(it => {
+        addEditItemRow(it);
+      });
+    } else {
+      addEditItemRow();
+    }
+
+    recalcEditTotals();
+
+    // Reset view steps
+    document.getElementById('editFormStep').style.display = 'block';
+    document.getElementById('editConfirmStep').style.display = 'none';
+    document.getElementById('editBillModal').style.display = 'block';
+    document.getElementById('editModalBackdrop').style.display = 'block';
+  } catch (err) {
+    alert("Error opening edit modal: " + err.message);
+  }
+}
+
+function closeEditModal() {
+  document.getElementById('editBillModal').style.display = 'none';
+  document.getElementById('editModalBackdrop').style.display = 'none';
+}
+
+function addEditItemRow(itemData = null) {
+  editRowCounter++;
+  const tbody = document.getElementById('editItemsTbody');
+  const tr = document.createElement('tr');
+  tr.id = `editRow_${editRowCounter}`;
+
+  const sName = itemData ? itemData.service_name : (editAvailableServices[0] ? editAvailableServices[0].name : 'Photostat B&W — A4');
+  const sides = itemData ? itemData.sides : 'Single';
+  const qty = itemData ? (itemData.quantity || 1) : 1;
+  const pages = itemData ? (itemData.pages_per_copy || 1) : 1;
+  const sheets = itemData ? (itemData.paper_sheets !== undefined ? itemData.paper_sheets : qty * pages) : (qty * pages);
+  const rate = itemData ? itemData.rate : (editAvailableServices[0] ? editAvailableServices[0].rate : 5.0);
+
+  // Build service options
+  let servOptions = '';
+  let matchFound = false;
+  editAvailableServices.forEach(s => {
+    const isSel = (s.name.toLowerCase() === sName.toLowerCase());
+    if (isSel) matchFound = true;
+    servOptions += `<option value="${escapeHtml(s.name)}" data-id="${s.id}" data-rate="${s.rate}" data-double="${s.double_rate || ''}" data-type="${s.print_type}" data-size="${s.paper_size}" data-sheets="${s.sheets_per_unit}" ${isSel ? 'selected' : ''}>${escapeHtml(s.name)}</option>`;
+  });
+  if (!matchFound && sName) {
+    servOptions = `<option value="${escapeHtml(sName)}" selected>${escapeHtml(sName)}</option>` + servOptions;
+  }
+  servOptions += `<option value="__custom__">+ Custom Service / Item</option>`;
+
+  tr.innerHTML = `
+    <td>
+      <select class="eb-service" onchange="onEditServiceSelect(this)" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+        ${servOptions}
+      </select>
+      <input type="text" class="eb-custom-name" placeholder="Custom Service Name" style="display:none; width:100%; margin-top:4px; padding:4px 6px; border:1px solid var(--line); border-radius:5px; font-size:11px;">
+      <input type="hidden" class="eb-type" value="${itemData ? itemData.print_type : 'bw'}">
+      <input type="hidden" class="eb-size" value="${itemData ? itemData.paper_size : 'A4'}">
+      <input type="hidden" class="eb-invid" value="${itemData && itemData.inventory_id ? itemData.inventory_id : ''}">
+    </td>
+    <td>
+      <select class="eb-sides" onchange="onEditRowChange(this)" style="width:100%; padding:5px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+        <option value="Single" ${sides === 'Single' ? 'selected' : ''}>Single</option>
+        <option value="Double" ${sides === 'Double' ? 'selected' : ''}>Double</option>
+      </select>
+    </td>
+    <td style="text-align:center;">
+      <input type="number" class="eb-qty" min="1" step="1" value="${qty}" oninput="onEditRowChange(this)" style="width:55px; padding:5px; text-align:center; border:1px solid var(--line); border-radius:6px; font-size:12px; font-weight:700;">
+    </td>
+    <td style="text-align:center;">
+      <input type="number" class="eb-pages" min="1" step="1" value="${pages}" oninput="onEditRowChange(this)" style="width:55px; padding:5px; text-align:center; border:1px solid var(--line); border-radius:6px; font-size:12px; font-weight:700;">
+    </td>
+    <td style="text-align:center;">
+      <input type="number" class="eb-sheets" min="0" step="1" value="${sheets}" oninput="recalcEditTotals()" style="width:55px; padding:5px; text-align:center; border:1px solid var(--line); border-radius:6px; font-size:12px; font-weight:700; color:#1a56db;" title="Physical paper sheets consumed">
+    </td>
+    <td style="text-align:right;">
+      <input type="number" class="eb-rate" step="0.01" min="0" value="${Number(rate).toFixed(2)}" oninput="onEditRowChange(this)" style="width:65px; padding:5px; text-align:right; border:1px solid var(--line); border-radius:6px; font-size:12px; font-weight:700;">
+    </td>
+    <td style="text-align:right; font-weight:700;">
+      <span class="eb-linetotal">₹0.00</span>
+    </td>
+    <td style="text-align:center;">
+      <button type="button" class="btn tiny danger" onclick="removeEditRow(this)" style="padding:2px 6px; font-size:13px; line-height:1;">×</button>
+    </td>
+  `;
+
+  tbody.appendChild(tr);
+  updateRowCalculations(tr);
+}
+
+function removeEditRow(btn) {
+  const tbody = document.getElementById('editItemsTbody');
+  if (tbody.children.length <= 1) {
+    alert("Bill must contain at least one item.");
+    return;
+  }
+  btn.closest('tr').remove();
+  recalcEditTotals();
+}
+
+function onEditServiceSelect(selectEl) {
+  const tr = selectEl.closest('tr');
+  const customInp = tr.querySelector('.eb-custom-name');
+  if (selectEl.value === '__custom__') {
+    customInp.style.display = 'block';
+    customInp.required = true;
+    return;
+  }
+  customInp.style.display = 'none';
+  customInp.required = false;
+
+  const opt = selectEl.selectedOptions[0];
+  if (opt) {
+    const sType = opt.dataset.type || 'bw';
+    const sSize = opt.dataset.size || 'A4';
+    const sRate = parseFloat(opt.dataset.rate) || 0;
+    const dRate = parseFloat(opt.dataset.double) || sRate;
+    const sides = tr.querySelector('.eb-sides').value;
+
+    tr.querySelector('.eb-type').value = sType;
+    tr.querySelector('.eb-size').value = sSize;
+    tr.querySelector('.eb-rate').value = (sides === 'Double' && dRate > 0 ? dRate : sRate).toFixed(2);
+  }
+  updateRowCalculations(tr);
+  recalcEditTotals();
+}
+
+function onEditRowChange(inputEl) {
+  const tr = inputEl.closest('tr');
+  const selectEl = tr.querySelector('.eb-service');
+  const opt = selectEl.selectedOptions[0];
+
+  // If sides changed, update default rate if from service
+  if (inputEl.classList.contains('eb-sides') && opt && opt.value !== '__custom__') {
+    const sRate = parseFloat(opt.dataset.rate) || 0;
+    const dRate = parseFloat(opt.dataset.double) || sRate;
+    const sides = inputEl.value;
+    tr.querySelector('.eb-rate').value = (sides === 'Double' && dRate > 0 ? dRate : sRate).toFixed(2);
+  }
+
+  updateRowCalculations(tr);
+  recalcEditTotals();
+}
+
+function updateRowCalculations(tr) {
+  const qty = Math.max(1, parseInt(tr.querySelector('.eb-qty').value) || 1);
+  const pages = Math.max(1, parseInt(tr.querySelector('.eb-pages').value) || 1);
+  const rate = Math.max(0, parseFloat(tr.querySelector('.eb-rate').value) || 0);
+  const size = (tr.querySelector('.eb-size').value || '').toLowerCase();
+
+  // Auto-calc sheets if user hasn't explicitly customized
+  const sheetsInp = tr.querySelector('.eb-sheets');
+  if (size === 'digital') {
+    sheetsInp.value = 0;
+  } else {
+    sheetsInp.value = qty * pages;
+  }
+
+  const lineTotal = qty * pages * rate;
+  tr.querySelector('.eb-linetotal').textContent = fmt(lineTotal);
+}
+
+function recalcEditTotals() {
+  const tbody = document.getElementById('editItemsTbody');
+  let subtotal = 0;
+  Array.from(tbody.children).forEach(tr => {
+    const qty = Math.max(1, parseInt(tr.querySelector('.eb-qty').value) || 1);
+    const pages = Math.max(1, parseInt(tr.querySelector('.eb-pages').value) || 1);
+    const rate = Math.max(0, parseFloat(tr.querySelector('.eb-rate').value) || 0);
+    const lt = qty * pages * rate;
+    tr.querySelector('.eb-linetotal').textContent = fmt(lt);
+    subtotal += lt;
+  });
+
+  const otherCharges = Math.max(0, parseFloat(document.getElementById('editOtherCharges').value) || 0);
+  const discount = Math.max(0, parseFloat(document.getElementById('editDiscount').value) || 0);
+  const finalTotal = Math.max(0, subtotal + otherCharges - discount);
+
+  const curPaid = editCurrentBill ? Number(editCurrentBill.paid || 0) : 0;
+  const balance = Math.max(0, finalTotal - curPaid);
+  const excess = curPaid > finalTotal ? (curPaid - finalTotal) : 0;
+
+  document.getElementById('editSubtotalDisplay').textContent = fmt(subtotal);
+  document.getElementById('editOtherDisplay').textContent = '+' + fmt(otherCharges);
+  document.getElementById('editDiscountDisplay').textContent = '-' + fmt(discount);
+  document.getElementById('editTotalDisplay').textContent = fmt(finalTotal);
+  document.getElementById('editPaidDisplay').textContent = fmt(curPaid);
+  document.getElementById('editBalanceDisplay').textContent = fmt(balance);
+
+  const excessAlert = document.getElementById('editExcessPaidAlert');
+  if (excess > 0.001) {
+    document.getElementById('excessPaidNum').textContent = fmt(curPaid);
+    document.getElementById('excessAmountNum').textContent = fmt(excess);
+    excessAlert.style.display = 'block';
+  } else {
+    excessAlert.style.display = 'none';
+  }
+}
+
+function collectEditPayload() {
+  const billId = document.getElementById('editBillId').value;
+  const dtVal = document.getElementById('editDateTime').value;
+  const customer = document.getElementById('editCustomer').value.trim();
+  const biller_name = document.getElementById('editBillerName').value.trim();
+  const payment_method = document.getElementById('editPaymentMethod').value;
+  const other_charges = parseFloat(document.getElementById('editOtherCharges').value) || 0;
+  const discount = parseFloat(document.getElementById('editDiscount').value) || 0;
+  const reason = document.getElementById('editReason').value.trim();
+
+  const tbody = document.getElementById('editItemsTbody');
+  const items = [];
+  Array.from(tbody.children).forEach(tr => {
+    const sel = tr.querySelector('.eb-service');
+    let sName = sel.value;
+    if (sName === '__custom__') {
+      sName = tr.querySelector('.eb-custom-name').value.trim() || 'Custom Service';
+    }
+    const sides = tr.querySelector('.eb-sides').value;
+    const qty = parseInt(tr.querySelector('.eb-qty').value) || 1;
+    const pages = parseInt(tr.querySelector('.eb-pages').value) || 1;
+    const sheets = parseInt(tr.querySelector('.eb-sheets').value) || 0;
+    const rate = parseFloat(tr.querySelector('.eb-rate').value) || 0;
+    const pType = tr.querySelector('.eb-type').value || 'bw';
+    const pSize = tr.querySelector('.eb-size').value || 'A4';
+    const invId = tr.querySelector('.eb-invid').value ? parseInt(tr.querySelector('.eb-invid').value) : null;
+
+    items.push({
+      service_name: sName,
+      sides: sides,
+      quantity: qty,
+      pages_per_copy: pages,
+      paper_sheets: sheets,
+      rate: rate,
+      print_type: pType,
+      paper_size: pSize,
+      inventory_id: invId
+    });
+  });
+
+  return {
+    bill_id: billId,
+    created_at: dtVal,
+    customer: customer,
+    biller_name: biller_name,
+    payment_method: payment_method,
+    other_charges: other_charges,
+    discount: discount,
+    reason: reason,
+    items: items
+  };
+}
+
+async function handleReviewClick(e) {
+  e.preventDefault();
+  const payload = collectEditPayload();
+
+  if (!payload.reason) {
+    alert("Please enter a reason for this correction.");
+    document.getElementById('editReason').focus();
+    return;
+  }
+  if (payload.items.length === 0) {
+    alert("Please keep at least one bill item.");
+    return;
+  }
+
+  const btn = document.getElementById('reviewEditBtn');
+  btn.disabled = true;
+  btn.textContent = 'Verifying Stock & Calculating…';
+
+  try {
+    const res = await fetch(`/api/bills/${payload.bill_id}/edit-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Preview failed');
+
+    editPendingPayload = payload;
+
+    // Render Confirmation Step Table
+    const tbody = document.getElementById('confirmTableBody');
+    tbody.innerHTML = '';
+    data.summary_rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-weight:700; color:var(--ink);">${escapeHtml(r.field)}</td>
+        <td style="color:var(--muted);">${escapeHtml(r.original)}</td>
+        <td style="${r.is_changed ? 'font-weight:800; color:var(--accent);' : 'font-weight:600;'}">
+          ${escapeHtml(r.corrected)}
+          ${r.is_changed ? '<span style="font-size:10px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:4px; margin-left:6px;">CHANGED</span>' : ''}
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // Render Stock Impact
+    const stockList = document.getElementById('confirmStockList');
+    if (data.stock_impacts && data.stock_impacts.length > 0) {
+      document.getElementById('confirmStockImpactBox').style.display = 'block';
+      stockList.innerHTML = data.stock_impacts.map(si => {
+        let diffBadge = '';
+        if (si.net_difference > 0) {
+          diffBadge = `<strong style="color:var(--green);">+${si.net_difference} sheets returned to stock</strong>`;
+        } else if (si.net_difference < 0) {
+          diffBadge = `<strong style="color:#c81e1e;">${si.net_difference} extra sheets consumed</strong>`;
+        } else {
+          diffBadge = `<span style="color:var(--muted);">0 sheets change</span>`;
+        }
+        return `
+          <div style="margin-bottom:6px; padding:4px 0; border-bottom:1px dashed #d1fae5;">
+            <strong>${escapeHtml(si.item_name)}</strong>: Consumed ${si.original_consumed} &rarr; ${si.new_consumed} sheets (${diffBadge})<br>
+            <span style="font-size:11px; color:#4a5568;">Current Live Stock: ${si.current_available} &rarr; Reconciled Balance: <strong>${si.new_available} sheets</strong></span>
+          </div>
+        `;
+      }).join('');
+    } else {
+      document.getElementById('confirmStockImpactBox').style.display = 'none';
+    }
+
+    // Render Warnings
+    const warnBox = document.getElementById('confirmWarningsBox');
+    if (data.warnings && data.warnings.length > 0) {
+      warnBox.style.display = 'block';
+      warnBox.innerHTML = `
+        <div style="background:#fff5f5; border:1.5px solid #feb2b2; padding:10px 14px; border-radius:8px; font-size:12px; color:#c53030;">
+          <strong>⚠️ Warnings / Alerts:</strong>
+          <ul style="margin:4px 0 0 16px; padding:0;">
+            ${data.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
+          </ul>
+        </div>
+      `;
+    } else {
+      warnBox.style.display = 'none';
+    }
+
+    // Control Final Save Button
+    const saveBtn = document.getElementById('finalSaveBtn');
+    if (!data.can_save) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Cannot Save: Insufficient Stock';
+      saveBtn.style.opacity = '0.5';
+    } else {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Confirm & Apply Corrections';
+      saveBtn.style.opacity = '1';
+    }
+
+    // Switch view to Confirmation Step
+    document.getElementById('editFormStep').style.display = 'none';
+    document.getElementById('editConfirmStep').style.display = 'block';
+
+  } catch (err) {
+    alert("Error preparing correction summary: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Review Correction Summary →';
+  }
+}
+
+function backToEditForm() {
+  document.getElementById('editConfirmStep').style.display = 'none';
+  document.getElementById('editFormStep').style.display = 'block';
+}
+
+async function submitConfirmedBillEdit() {
+  if (!editPendingPayload) {
+    alert("No edit payload prepared. Please review again.");
+    return;
+  }
+
+  const btn = document.getElementById('finalSaveBtn');
+  btn.disabled = true;
+  btn.textContent = 'Applying Corrections & Reconciling Stock…';
+
+  try {
+    const res = await fetch(`/api/bills/${editPendingPayload.bill_id}/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(editPendingPayload)
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save corrections');
+
+    alert(data.message || 'Bill successfully corrected!');
+    closeEditModal();
+    window.location.reload();
+  } catch (err) {
+    alert("Error applying corrections: " + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Confirm & Apply Corrections';
+  }
+}
+
+// ── View Edit History / Audit Log Modal ──
+async function openAuditHistoryModal(billId) {
+  document.getElementById('auditBillNoDisplay').textContent = 'Loading…';
+  document.getElementById('auditLoading').style.display = 'block';
+  document.getElementById('auditLogsList').innerHTML = '';
+  document.getElementById('auditHistoryModal').style.display = 'block';
+  document.getElementById('auditModalBackdrop').style.display = 'block';
+
+  try {
+    const res = await fetch(`/api/bills/${billId}/audit`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to fetch audit history');
+
+    document.getElementById('auditBillNoDisplay').textContent = data.bill_no;
+    document.getElementById('auditLoading').style.display = 'none';
+
+    const logsContainer = document.getElementById('auditLogsList');
+    if (!data.logs || data.logs.length === 0) {
+      logsContainer.innerHTML = '<div style="text-align:center; padding:32px; color:var(--muted);">No edit history records found for this bill.</div>';
+      return;
+    }
+
+    let html = '';
+    data.logs.forEach(lg => {
+      const editDt = lg.created_at ? lg.created_at.slice(0, 19).replace('T', ' ') : '-';
+      const origDt = lg.original_created_at ? lg.original_created_at.slice(0, 19).replace('T', ' ') : '-';
+      
+      const origVals = lg.original_values_parsed || {};
+      const newVals = lg.updated_values_parsed || {};
+
+      html += `
+        <div style="border:1.5px solid var(--line); border-radius:12px; padding:14px; margin-bottom:14px; background:#fff;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid var(--line); padding-bottom:6px;">
+            <div>
+              <span class="status-badge" style="background:#e0e7ff; color:#3730a3; font-weight:800; font-size:11px;">${escapeHtml(lg.action)}</span>
+              <strong style="margin-left:8px; font-size:13px; color:var(--ink);">${escapeHtml(editDt)}</strong>
+              <span class="muted" style="font-size:12px; margin-left:6px;">by <strong>${escapeHtml(lg.performed_by || 'Admin')}</strong></span>
+            </div>
+            <span style="font-size:11px; color:var(--muted);">Orig Entry: ${escapeHtml(origDt)}</span>
+          </div>
+
+          <div style="margin-bottom:8px;">
+            <strong style="font-size:12px; color:#4b5563;">Reason:</strong>
+            <span style="font-size:13px; color:var(--ink);">${escapeHtml(lg.reason || lg.details || 'Minor correction')}</span>
+          </div>
+
+          <div style="margin-bottom:8px;">
+            <strong style="font-size:11px; text-transform:uppercase; color:var(--muted);">Fields Modified:</strong>
+            <span style="font-size:12px; font-weight:700; color:var(--accent);">${escapeHtml(lg.fields_changed || 'items')}</span>
+          </div>
+
+          <!-- Comparison Table -->
+          <div style="background:#faf8fc; border-radius:8px; padding:8px 12px; font-size:12px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+              <div>
+                <span style="font-size:10px; text-transform:uppercase; color:var(--muted); font-weight:700; display:block;">Original Snapshot</span>
+                <div>Total: <strong>${fmt(origVals.total)}</strong> · Paid: ${fmt(origVals.paid)}</div>
+                <div>Status: <strong>${escapeHtml(origVals.payment_status || '-')}</strong></div>
+                ${origVals.items ? `<div class="muted" style="font-size:11px;">${origVals.items.length} item(s)</div>` : ''}
+              </div>
+              <div>
+                <span style="font-size:10px; text-transform:uppercase; color:var(--muted); font-weight:700; display:block;">Corrected Snapshot</span>
+                <div>Total: <strong style="color:var(--accent);">${fmt(newVals.total)}</strong> · Paid: ${fmt(newVals.paid)}</div>
+                <div>Status: <strong>${escapeHtml(newVals.payment_status || '-')}</strong></div>
+                ${newVals.excess_amount > 0 ? `<div style="color:#b84a00; font-weight:700; font-size:11px;">Excess Paid: ${fmt(newVals.excess_amount)}</div>` : ''}
+                ${newVals.items ? `<div class="muted" style="font-size:11px;">${newVals.items.length} item(s)</div>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+
+    logsContainer.innerHTML = html;
+  } catch (err) {
+    alert("Error loading audit history: " + err.message);
+    closeAuditModal();
+  }
+}
+
+function closeAuditModal() {
+  document.getElementById('auditHistoryModal').style.display = 'none';
+  document.getElementById('auditModalBackdrop').style.display = 'none';
+}
+</script>
+{% endif %}
