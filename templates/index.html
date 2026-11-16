@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}New Bill | Iread{% endblock %}
+{% block container_class %}pos-container{% endblock %}
 {% block content %}
 
 <!-- ── TOP BAR STATS ── -->
@@ -9,8 +10,8 @@
     <span>New Bill</span>
   </div>
   <div class="pos-stats">
-    <div><span>Today</span><strong>{{ today_count }} bills</strong></div>
-    <div><span>Sales</span><strong>{{ today_total|inr }}</strong></div>
+    <div><span>Today</span><strong id="dashTodayCount">{{ today_count }} bills</strong></div>
+    <div><span>Sales</span><strong id="dashTodaySales">{{ today_total|inr }}</strong></div>
   </div>
 </div>
 
@@ -82,7 +83,7 @@
         <div><span>Subtotal</span><strong id="cSubtotal">₹0.00</strong></div>
         <div>
           <label for="cDiscount">Discount ₹</label>
-          <input id="cDiscount" class="cart-input-num" type="number" min="0" step="0.01" value="0">
+          <input id="cDiscount" class="cart-input-num no-spinner" type="number" min="0" step="0.01" value="0">
         </div>
         <div class="cart-grand"><span>Total</span><strong id="cTotal">₹0.00</strong></div>
 
@@ -105,11 +106,11 @@
           <strong id="cBalanceDisplay" style="font-weight: 800; font-size: 15px;">₹0.00</strong>
         </div>
       </div>
-      <div class="billing-actions" style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px;">
-        <button class="pos-submit-btn" id="saveAndPrintBtn" type="button" disabled style="padding: 13px 8px; font-size: 13px;">
+      <div class="billing-actions">
+        <button class="pos-submit-btn" id="saveAndPrintBtn" type="button" disabled style="padding: 12px 6px; font-size: 13px;">
           🖨 Save &amp; Print
         </button>
-        <button class="pos-btn secondary" id="saveOnlyBtn" type="button" disabled style="padding: 13px 8px; font-size: 13px; font-weight: 700; border-radius: 12px;">
+        <button class="pos-btn secondary" id="saveOnlyBtn" type="button" disabled style="padding: 12px 6px; font-size: 13px; font-weight: 700; border-radius: 12px;">
           💾 Save Only
         </button>
       </div>
@@ -417,10 +418,10 @@ function renderCart() {
         </div>
       </div>
       <div class="ci-right">
-        <div class="ci-qty-ctrl" style="display:inline-flex; align-items:center; border:1px solid #e0dbe3; border-radius:6px; background:#fff; margin-right:4px;">
-          <button type="button" class="ci-qty-btn ci-qty-dec" data-idx="${idx}" style="border:none; background:transparent; padding:2px 7px; font-size:13px; font-weight:700; cursor:pointer; color:#777; line-height:1;">−</button>
-          <span class="ci-qty-val" style="font-size:12px; font-weight:700; min-width:18px; text-align:center; padding:0 2px;">${item.qty}</span>
-          <button type="button" class="ci-qty-btn ci-qty-inc" data-idx="${idx}" style="border:none; background:transparent; padding:2px 7px; font-size:13px; font-weight:700; cursor:pointer; color:#777; line-height:1;">+</button>
+        <div class="ci-qty-ctrl" style="display:inline-flex; align-items:center; border:1px solid #e0dbe3; border-radius:6px; background:#fff;">
+          <button type="button" class="ci-qty-btn ci-qty-dec" data-idx="${idx}" style="border:none; background:transparent; padding:2px 6px; font-size:12px; font-weight:700; cursor:pointer; color:#777; line-height:1;">−</button>
+          <span class="ci-qty-val" style="font-size:12px; font-weight:700; min-width:16px; text-align:center; padding:0 2px;">${item.qty}</span>
+          <button type="button" class="ci-qty-btn ci-qty-inc" data-idx="${idx}" style="border:none; background:transparent; padding:2px 6px; font-size:12px; font-weight:700; cursor:pointer; color:#777; line-height:1;">+</button>
         </div>
         <span class="ci-total">${fmt(item.lineTotal)}</span>
         <button type="button" class="ci-del" data-idx="${idx}" aria-label="Remove">✕</button>
@@ -543,7 +544,10 @@ function updatePaymentStatusDisplay(total) {
   }
 }
 
-document.getElementById('cDiscount').addEventListener('input', recalc);
+['input', 'change', 'keyup'].forEach(evt => {
+  const el = document.getElementById('cDiscount');
+  if (el) el.addEventListener(evt, recalc);
+});
 document.getElementById('cPaidToggle').addEventListener('change', recalc);
 document.getElementById('cPaid').addEventListener('input', recalc);
 
@@ -620,6 +624,13 @@ async function handleBillingAction(shouldPrint) {
       throw new Error(data.error || 'Failed to save bill');
     }
 
+    // 0. Automatically update top dashboard totals with live database figures
+    if (data.today_count !== undefined && data.today_total !== undefined) {
+      updateDashboardStats(data.today_count, data.today_total);
+    } else {
+      fetchDashboardStats();
+    }
+
     // 1. Direct Thermal Print via lightweight iframe if requested
     if (shouldPrint && data.receipt_url) {
       const frame = document.getElementById('silentReceiptFrame');
@@ -657,6 +668,33 @@ function resetBillingScreen() {
 
 document.getElementById('saveAndPrintBtn').addEventListener('click', () => handleBillingAction(true));
 document.getElementById('saveOnlyBtn').addEventListener('click', () => handleBillingAction(false));
+
+/* ─────────── Live Dashboard Statistics Synchronization ─────────── */
+function updateDashboardStats(count, total) {
+  const countEl = document.getElementById('dashTodayCount');
+  const salesEl = document.getElementById('dashTodaySales');
+  if (countEl) {
+    countEl.textContent = `${count} bill${count === 1 ? '' : 's'}`;
+  }
+  if (salesEl) {
+    salesEl.textContent = fmt(total);
+  }
+}
+
+async function fetchDashboardStats() {
+  try {
+    const res = await fetch('/api/dashboard-stats');
+    if (!res.ok) return;
+    const d = await res.json();
+    if (d.success) {
+      updateDashboardStats(d.today_count, d.today_total);
+    }
+  } catch (e) {
+    console.error('Failed to sync dashboard stats', e);
+  }
+}
+
+window.addEventListener('focus', fetchDashboardStats);
 
 /* ─────────── Helpers ─────────── */
 function fmt(n) {

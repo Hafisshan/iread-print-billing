@@ -160,11 +160,11 @@
 </section>
 
 <!-- ── COLLECT PAYMENT MODAL ── -->
-<div class="modal-backdrop" id="payModalBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="payModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:480px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:10px;">
+<div class="modal-backdrop" id="payModalBackdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closePayModal()"></div>
+<div class="item-modal app-dialog-modal" id="payModal" style="display:none; width:min(92vw, 480px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
     <h3 style="margin:0; font-size:17px; font-weight:800; color:var(--ink);">Collect Payment — <span id="payBillNo"></span></h3>
-    <button type="button" class="modal-close" onclick="closePayModal()" style="border:none; background:none; font-size:20px; cursor:pointer;">×</button>
+    <button type="button" class="modal-close" onclick="closePayModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
   </div>
 
   <div style="background:var(--soft); border-radius:10px; padding:12px 16px; margin-bottom:16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; text-align:center;">
@@ -221,9 +221,9 @@
       </div>
     </div>
 
-    <div style="display:flex; justify-content:flex-end; gap:8px;">
+    <div class="modal-sticky-actions">
       <button type="button" class="btn secondary" onclick="closePayModal()">Cancel</button>
-      <button type="submit" class="btn primary" id="savePayBtn" style="background:#16784b; border-color:#16784b;">Save Payment</button>
+      <button type="submit" class="btn primary" id="savePayBtn" style="background:#16784b; border-color:#16784b; font-weight:700;">Save Payment</button>
     </div>
   </form>
 </div>

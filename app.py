@@ -1315,6 +1315,34 @@ def maintenance_page():
 
     return render_template("maintenance.html", expenses=rows, total_count=total_count, total_expense=total_expense, today=date.today().isoformat())
 
+# ── Dashboard Statistics Helper ──
+def get_today_dashboard_stats():
+    today = date.today().isoformat()
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(total), 0) AS today_total,
+                       COUNT(*) AS today_count
+                FROM bills 
+                WHERE substr(created_at, 1, 10) = %s AND is_deleted = 0
+            """, (today,))
+            row = cur.fetchone()
+            t_total = float(row['today_total'] if row else 0.0)
+            t_count = int(row['today_count'] if row else 0)
+            return {
+                "today_total": t_total,
+                "today_count": t_count,
+                "today_total_formatted": inr(t_total)
+            }
+
+@app.route("/api/dashboard-stats")
+def dashboard_stats_api():
+    try:
+        stats = get_today_dashboard_stats()
+        return {"ok": True, "success": True, **stats}
+    except Exception as e:
+        return {"ok": False, "success": False, "error": str(e)}, 500
+
 # ── Billing Route (Fast Touch POS) ──
 @app.route("/")
 def index():
@@ -1325,14 +1353,8 @@ def index():
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM services WHERE active=1 ORDER BY print_type, name")
                 services = cur.fetchall()
-                today = date.today().isoformat()
-                cur.execute("SELECT COALESCE(SUM(total),0) AS today_total FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0", (today,))
-                row = cur.fetchone()
-                today_total = row['today_total'] if row else 0
-                cur.execute("SELECT COUNT(*) AS today_count FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0", (today,))
-                row = cur.fetchone()
-                today_count = row['today_count'] if row else 0
-        return render_template("index.html", services=services, today_total=today_total, today_count=today_count)
+        dash_stats = get_today_dashboard_stats()
+        return render_template("index.html", services=services, today_total=dash_stats["today_total"], today_count=dash_stats["today_count"])
     except Exception as e:
         return f"Database query error: {str(e)}", 500
 
@@ -1728,7 +1750,9 @@ def create_bill_api():
             conn.commit()
 
         receipt_url = url_for("receipt", bill_id=bill_id)
+        dash_stats = get_today_dashboard_stats()
         return {
+            "ok": True,
             "success": True,
             "bill_id": bill_id,
             "bill_no": bill_no,
@@ -1736,7 +1760,10 @@ def create_bill_api():
             "paid": paid,
             "balance": balance,
             "payment_status": payment_status,
-            "receipt_url": receipt_url
+            "receipt_url": receipt_url,
+            "today_count": dash_stats["today_count"],
+            "today_total": dash_stats["today_total"],
+            "today_total_formatted": dash_stats["today_total_formatted"]
         }
     except Exception as e:
         return {"success": False, "error": str(e)}, 400
@@ -1953,6 +1980,7 @@ def collect_bill_payment(bill_id):
             conn.commit()
 
         return {
+            "ok": True,
             "success": True,
             "bill_id": bill_id,
             "paid": new_paid,

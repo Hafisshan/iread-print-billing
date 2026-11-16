@@ -460,14 +460,14 @@
 
 {% if is_admin %}
 <!-- ── Manual Stock Adjustment Modal ── -->
-<div class="modal-backdrop" id="adjustModalBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="adjustModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:480px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
-    <h3 style="margin:0; font-size:16px; font-weight:800;">Manual Stock Adjustment</h3>
-    <button type="button" class="modal-close" onclick="closeAdjustModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+<div class="modal-backdrop" id="adjustModalBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeAdjustModal()"></div>
+<div class="item-modal app-dialog-modal" id="adjustModal" style="display:none; width:min(92vw, 480px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
+    <h3 style="margin:0; font-size:16px; font-weight:800; color:var(--ink);">Manual Stock Adjustment</h3>
+    <button type="button" class="modal-close" onclick="closeAdjustModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
   </div>
   
-  <p class="muted" style="font-size:12px; margin-bottom:14px;">
+  <p class="muted" style="font-size:12px; margin-bottom:14px; line-height:1.4;">
     Use for physical stock counts, wastage, damages or non-purchase corrections.
   </p>
 
@@ -476,47 +476,47 @@
     <input type="hidden" id="adjCurrentAvailVal">
 
     <div style="margin-bottom:12px;">
-      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Paper Item</label>
-      <input id="adjItemName" readonly style="width:100%; padding:8px 12px; background:#f7f5f8; border:1.5px solid var(--line); border-radius:8px; font-weight:700; color:var(--ink);">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Paper Item</label>
+      <input id="adjItemName" readonly style="width:100%; padding:9px 12px; background:#f7f5f8; border:1.5px solid var(--line); border-radius:8px; font-weight:700; color:var(--ink); font-size:13px; box-sizing:border-box;">
     </div>
 
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
       <div>
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Adjustment Type</label>
-        <select id="adjType" name="adj_type" onchange="calcAdjPreview()" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Adjustment Type</label>
+        <select id="adjType" name="adj_type" onchange="calcAdjPreview()" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:600; background:#fff; color:var(--ink); box-sizing:border-box;">
           <option value="ADD">Add Stock (+)</option>
           <option value="REDUCE">Reduce Stock (-)</option>
           <option value="SET">Set Correct Balance (=)</option>
         </select>
       </div>
       <div>
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;" id="adjQtyLabel">Quantity (Sheets)</label>
-        <input type="number" id="adjQty" name="quantity" min="1" required placeholder="e.g. 50" oninput="calcAdjPreview()" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; font-weight:800; text-align:right;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);" id="adjQtyLabel">Quantity (Sheets)</label>
+        <input type="number" id="adjQty" name="quantity" min="1" required placeholder="e.g. 50" oninput="calcAdjPreview()" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; font-weight:800; text-align:right; box-sizing:border-box;">
       </div>
     </div>
 
     <!-- Live calculation preview banner -->
-    <div id="adjPreviewBanner" style="background:#eef7f2; border:1px solid #16784b30; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px; color:#16784b; font-weight:600;">
+    <div id="adjPreviewBanner" style="background:#eef7f2; border:1px solid #16784b30; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px; color:#16784b; font-weight:600; line-height:1.4;">
       Current: 0 → Adjustment: 0 → <strong>New Balance: 0 sheets</strong>
     </div>
 
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
       <div>
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Adjustment Date</label>
-        <input type="date" id="adjDate" name="adj_date" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Adjustment Date</label>
+        <input type="date" id="adjDate" name="adj_date" required style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
       </div>
       <div>
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Recorded By</label>
-        <input value="Admin" readonly style="width:100%; padding:8px; background:#f7f5f8; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Recorded By</label>
+        <input value="Admin" readonly style="width:100%; padding:8px 10px; background:#f7f5f8; border:1.5px solid var(--line); border-radius:8px; font-size:13px; color:var(--ink); box-sizing:border-box;">
       </div>
     </div>
 
     <div style="margin-bottom:16px;">
-      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reason / Description <span style="color:#c81e1e;">*</span></label>
-      <input id="adjReason" name="reason" required placeholder="e.g. Physical stock count audit / paper jam wastage" style="width:100%; padding:8px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Reason / Description <span style="color:#c81e1e;">*</span></label>
+      <input id="adjReason" name="reason" required placeholder="e.g. Physical stock count audit / paper jam wastage" style="width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
     </div>
 
-    <div style="display:flex; justify-content:flex-end; gap:8px;">
+    <div class="modal-sticky-actions">
       <button type="button" class="btn secondary" onclick="closeAdjustModal()">Cancel</button>
       <button type="submit" class="btn primary" id="adjSubmitBtn" style="background:var(--accent); border-color:var(--accent); font-weight:700;">Record Adjustment</button>
     </div>
@@ -525,8 +525,8 @@
 {% endif %}
 
 <!-- ── View Full Supplier Purchase Bill Modal ── -->
-<div class="modal-backdrop" id="viewPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="viewPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:760px; max-height:88vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
+<div class="modal-backdrop" id="viewPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeViewPurchaseModal()"></div>
+<div class="item-modal app-dialog-modal" id="viewPurchModal" style="display:none; width:min(92vw, 760px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
     <h3 style="margin:0; font-size:16px; font-weight:800;">Supplier Invoice — <span id="vpBillNumber"></span></h3>
     <button type="button" class="modal-close" onclick="closeViewPurchaseModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
@@ -604,14 +604,14 @@
 
 {% if is_admin %}
 <!-- ── Return Paper Stock to Supplier Modal (Admin) ── -->
-<div class="modal-backdrop" id="retPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1002;"></div>
-<div class="item-modal" id="retPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:480px; z-index:1003; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
-    <h3 style="margin:0; font-size:16px; font-weight:800;">Return Unsold Stock to Supplier</h3>
-    <button type="button" class="modal-close" onclick="closeReturnModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+<div class="modal-backdrop" id="retPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1002;" onclick="closeReturnModal()"></div>
+<div class="item-modal app-dialog-modal" id="retPurchModal" style="display:none; width:min(92vw, 480px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1003; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
+    <h3 style="margin:0; font-size:16px; font-weight:800; color:var(--ink);">Return Unsold Stock to Supplier</h3>
+    <button type="button" class="modal-close" onclick="closeReturnModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
   </div>
 
-  <p class="muted" style="font-size:12px; margin-bottom:14px;">
+  <p class="muted" style="font-size:12px; margin-bottom:14px; line-height:1.4;">
     Returns unsold physical paper sheets back to the supplier. Deducts stock from inventory and updates invoice balance or generates supplier credit.
   </p>
 
@@ -628,12 +628,12 @@
 
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
       <div>
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Sheets to Return</label>
-        <input type="number" id="rpReturnQty" min="1" required oninput="calcReturnAmount()" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:700;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Sheets to Return</label>
+        <input type="number" id="rpReturnQty" min="1" required oninput="calcReturnAmount()" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; font-weight:700; box-sizing:border-box;">
       </div>
       <div>
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Return Date</label>
-        <input type="date" id="rpReturnDate" required style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Return Date</label>
+        <input type="date" id="rpReturnDate" required style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
       </div>
     </div>
 
@@ -643,16 +643,16 @@
     </div>
 
     <div style="margin-bottom:12px;">
-      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reason for Return</label>
-      <input type="text" id="rpReason" required placeholder="e.g. Excess stock / damaged bundle / supplier agreed return" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Reason for Return</label>
+      <input type="text" id="rpReason" required placeholder="e.g. Excess stock / damaged bundle / supplier agreed return" style="width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
     </div>
 
     <div style="margin-bottom:16px;">
-      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Additional Notes (Optional)</label>
-      <input type="text" id="rpNotes" placeholder="Optional notes" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Additional Notes (Optional)</label>
+      <input type="text" id="rpNotes" placeholder="Optional notes" style="width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
     </div>
 
-    <div style="display:flex; justify-content:flex-end; gap:8px;">
+    <div class="modal-sticky-actions">
       <button type="button" class="btn secondary" onclick="closeReturnModal()">Cancel</button>
       <button type="submit" class="btn primary" id="rpSubmitBtn" style="background:#b84a00; border-color:#b84a00; font-weight:800;">Confirm Return</button>
     </div>
@@ -662,11 +662,11 @@
 
 {% if is_admin %}
 <!-- ── Edit Supplier Purchase Bill Modal (Admin) ── -->
-<div class="modal-backdrop" id="editPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="editPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:720px; max-height:85vh; overflow-y:auto; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+<div class="modal-backdrop" id="editPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeEditPurchaseModal()"></div>
+<div class="item-modal app-dialog-modal" id="editPurchModal" style="display:none; width:min(92vw, 720px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
     <h3 style="margin:0; font-size:16px; font-weight:800;">Edit Supplier Purchase Bill</h3>
-    <button type="button" class="modal-close" onclick="closeEditPurchaseModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+    <button type="button" class="modal-close" onclick="closeEditPurchaseModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
   </div>
   
   <p class="muted" style="font-size:12px; margin-bottom:14px;">
@@ -734,7 +734,7 @@
       <input id="epNotes" placeholder="Reason for correction" style="width:100%; padding:8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
     </div>
 
-    <div style="display:flex; justify-content:flex-end; gap:8px;">
+    <div class="modal-sticky-actions">
       <button type="button" class="btn secondary" onclick="closeEditPurchaseModal()">Cancel</button>
       <button type="submit" class="btn primary" id="epSubmitBtn" style="font-weight:800;">Save Corrections</button>
     </div>
@@ -742,23 +742,26 @@
 </div>
 
 <!-- ── Delete Purchase Confirmation Modal (Admin) ── -->
-<div class="modal-backdrop" id="delPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="delPurchModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:440px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <h3 style="margin:0 0 10px; font-size:16px; color:#c81e1e; font-weight:800;">Delete / Cancel Purchase Bill</h3>
+<div class="modal-backdrop" id="delPurchBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeDeletePurchaseModal()"></div>
+<div class="item-modal app-dialog-modal" id="delPurchModal" style="display:none; width:min(92vw, 440px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
+    <h3 style="margin:0; font-size:16px; color:#c81e1e; font-weight:800;">Delete Purchase Bill</h3>
+    <button type="button" class="modal-close" onclick="closeDeletePurchaseModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
+  </div>
   <p style="font-size:13px; color:var(--ink); margin-bottom:12px;">
     Are you sure you want to delete purchase invoice <strong id="delPurchBillNo"></strong>?
   </p>
-  <p class="muted" style="font-size:12px; margin-bottom:14px; background:#fff5f5; border:1px solid #fed7d7; padding:8px 10px; border-radius:8px;">
+  <p class="muted" style="font-size:12px; margin-bottom:14px; background:#fff5f5; border:1px solid #fed7d7; padding:8px 10px; border-radius:8px; line-height:1.4;">
     ⚠️ This will reverse all stock sheets added by this invoice and remove the supplier payable balance. This operation is blocked if any purchased stock was already consumed in billing.
   </p>
   
   <form id="delPurchForm" onsubmit="submitDeletePurchase(event)">
     <input type="hidden" id="delPurchId">
     <div style="margin-bottom:16px;">
-      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Cancellation Reason <span style="color:#c81e1e;">*</span></label>
-      <input id="delPurchReason" required placeholder="e.g. Duplicate entry / Incorrect supplier invoice" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+      <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Cancellation Reason <span style="color:#c81e1e;">*</span></label>
+      <input id="delPurchReason" required placeholder="e.g. Duplicate entry / Incorrect supplier invoice" style="width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
     </div>
-    <div style="display:flex; justify-content:flex-end; gap:8px;">
+    <div class="modal-sticky-actions">
       <button type="button" class="btn secondary" onclick="closeDeletePurchaseModal()">Cancel</button>
       <button type="submit" class="btn danger" id="delPurchSubmitBtn" style="font-weight:700;">Delete &amp; Reverse Stock</button>
     </div>
@@ -767,10 +770,10 @@
 
 <!-- ── Remove / Archive Stock Item Modal (Admin) ── -->
 <div class="modal-backdrop" id="removeItemBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeRemoveItemModal()"></div>
-<div class="item-modal" id="removeItemModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:500px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+<div class="item-modal app-dialog-modal" id="removeItemModal" style="display:none; width:min(92vw, 500px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
     <h3 style="margin:0; font-size:16px; font-weight:800; color:#c81e1e;">Remove Stock Item</h3>
-    <button type="button" class="modal-close" onclick="closeRemoveItemModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+    <button type="button" class="modal-close" onclick="closeRemoveItemModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
   </div>
 
   <div id="removeItemLoading" style="text-align:center; padding:20px; font-size:13px; color:var(--muted);">
@@ -819,10 +822,10 @@
     <form id="removeItemForm" onsubmit="submitRemoveItem(event)">
       <input type="hidden" id="remItemId">
       <div style="margin-bottom:16px;">
-        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reason / Notes for Removal <span style="color:#c81e1e;">*</span></label>
-        <input id="remItemReason" required placeholder="e.g. Discontinued paper / no longer used in shop" style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:13px;">
+        <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Reason / Notes for Removal <span style="color:#c81e1e;">*</span></label>
+        <input id="remItemReason" required placeholder="e.g. Discontinued paper / no longer used in shop" style="width:100%; padding:9px 12px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; box-sizing:border-box;">
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="modal-sticky-actions">
         <button type="button" class="btn secondary" onclick="closeRemoveItemModal()">Cancel</button>
         <button type="submit" class="btn danger" id="remItemSubmitBtn" style="font-weight:700;">Confirm Removal</button>
       </div>
@@ -832,11 +835,11 @@
 {% endif %}
 
 <!-- ── Pay Supplier Modal (Admin) ── -->
-<div class="modal-backdrop" id="supPayBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;"></div>
-<div class="item-modal" id="supPayModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:90%; max-width:460px; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 12px 40px rgba(0,0,0,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
-    <h3 style="margin:0; font-size:16px; font-weight:800;">Pay Supplier — <span id="supPayBillNo"></span></h3>
-    <button type="button" class="modal-close" onclick="closeSupplierPayModal()" style="border:none; background:none; font-size:22px; cursor:pointer;">×</button>
+<div class="modal-backdrop" id="supPayBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000;" onclick="closeSupplierPayModal()"></div>
+<div class="item-modal app-dialog-modal" id="supPayModal" style="display:none; width:min(92vw, 460px); max-height:88vh; overflow-y:auto; overscroll-behavior:contain; z-index:1001; background:#fff; border-radius:16px; padding:22px; box-shadow:0 16px 48px rgba(0,0,0,0.28); box-sizing:border-box;">
+  <div class="modal-sticky-header">
+    <h3 style="margin:0; font-size:16px; font-weight:800; color:var(--ink);">Pay Supplier — <span id="supPayBillNo"></span></h3>
+    <button type="button" class="modal-close" onclick="closeSupplierPayModal()" style="border:none; background:#f2eef4; border-radius:50%; width:32px; height:32px; font-size:20px; cursor:pointer; display:grid; place-items:center; line-height:1; color:var(--muted);">×</button>
   </div>
   <p style="font-size:12px; color:var(--muted); margin-bottom:12px;">Supplier: <strong id="supPaySupplier" style="color:var(--ink);"></strong></p>
   
@@ -871,9 +874,9 @@
       <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px;">Reference / Notes</label>
       <input type="text" id="supPayNotes" placeholder="e.g. UTR # or Cheque #" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:7px; font-size:13px;">
     </div>
-    <div style="display:flex; justify-content:flex-end; gap:8px;">
+    <div class="modal-sticky-actions">
       <button type="button" class="btn secondary" onclick="closeSupplierPayModal()">Cancel</button>
-      <button type="submit" class="btn primary" id="supPaySubmitBtn" style="background:#16784b; border-color:#16784b;">Save Payment</button>
+      <button type="submit" class="btn primary" id="supPaySubmitBtn" style="background:#16784b; border-color:#16784b; font-weight:700;">Save Payment</button>
     </div>
   </form>
 </div>
