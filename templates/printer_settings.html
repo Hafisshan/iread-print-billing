@@ -3,23 +3,80 @@
 {% block content %}
 <div class="pagehead">
   <div>
-    <p class="eyebrow">DEVICE CONFIGURATION</p>
+    <p class="eyebrow">DEVICE &amp; PRINT SERVICE CONFIGURATION</p>
     <h1>Printer Settings</h1>
-    <p class="muted">Configure default thermal printer (80mm/72mm/58mm), test printing, and auto-print options.</p>
+    <p class="muted">Manage local thermal printers, Wi-Fi PC Print Service for Android mobile staff, and print queues.</p>
   </div>
 </div>
 
-<div class="reportgrid">
-  <!-- ── Current Default Printer Card ── -->
-  <section class="panel">
-    <h2>Current Configured Printer</h2>
-    <div style="padding: 16px; background: #faf9fb; border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 18px;">
-      <div style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; letter-spacing: 0.5px;">Active Printer</div>
-      <div style="font-size: 20px; font-weight: 800; color: var(--accent); margin-top: 4px;" id="currentPrinterDisplay">
-        {{ current_printer or 'System Default / Browser Dialog' }}
+<div class="reportgrid" style="grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px;">
+  <!-- ── 1. PC-Based Wi-Fi Print Service Status ── -->
+  <section class="panel" style="border-top: 4px solid {% if pc_is_online %}#10b981{% else %}#ef4444{% endif %};">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+      <h2 style="margin: 0; font-size: 18px;">PC Print Service (Wi-Fi)</h2>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: {% if pc_is_online %}#ecfdf5; color: #065f46; border: 1px solid #a7f3d0;{% else %}#fef2f2; color: #991b1b; border: 1px solid #fecaca;{% endif %}">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: {% if pc_is_online %}#10b981{% else %}#ef4444{% endif %};"></span>
+        {{ 'ONLINE' if pc_is_online else 'OFFLINE' }}
+      </span>
+    </div>
+
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
+      Staff using the Android APK send bills wirelessly to this PC. The PC Print Service prints receipts directly to the attached thermal printer.
+    </p>
+
+    <div style="background: #faf9fb; border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 16px; font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0edf4;">
+        <span style="color: var(--muted);">Heartbeat / Status:</span>
+        <strong>{{ 'Connected & Ready' if pc_is_online else 'No heartbeat in > 30s' }}</strong>
       </div>
-      <div style="font-size: 12px; color: var(--muted); margin-top: 6px;">
-        Paper Size: <strong>{{ thermal_width or '80mm' }}</strong>
+      <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0edf4;">
+        <span style="color: var(--muted);">Last Seen:</span>
+        <strong>{{ last_seen_str or 'Never' }}</strong>
+      </div>
+      {% if pc_info %}
+      <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0edf4;">
+        <span style="color: var(--muted);">PC Host / OS:</span>
+        <strong>{{ pc_info.get('hostname', 'PC') }} ({{ pc_info.get('os', 'Unknown') }})</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between; padding: 4px 0;">
+        <span style="color: var(--muted);">Target Printer:</span>
+        <strong>{{ pc_info.get('printer_name') or current_printer }}</strong>
+      </div>
+      {% endif %}
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <label style="font-size: 12px; font-weight: 700; color: var(--ink); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">
+        PC Print Service API Token
+      </label>
+      <div style="display: flex; gap: 8px;">
+        <input type="text" id="apiTokenInput" readonly value="{{ printer_api_key }}" style="font-family: monospace; font-size: 13px; background: #f4f3f6; flex: 1; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 8px;">
+        <button class="btn secondary" type="button" onclick="copyApiToken()" style="white-space: nowrap; padding: 6px 12px;">Copy</button>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+      <form method="post" style="display: inline;">
+        <input type="hidden" name="action" value="test_print_pc">
+        <button class="btn primary" type="submit" style="font-size: 13px;">Queue Test Print to PC</button>
+      </form>
+      <form method="post" style="display: inline;" onsubmit="return confirm('Regenerating token will require updating config.json on the counter PC. Continue?');">
+        <input type="hidden" name="action" value="regenerate_api_key">
+        <button class="btn secondary" type="submit" style="font-size: 13px;">Regenerate Token</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ── 2. Hardware / Paper Configuration ── -->
+  <section class="panel">
+    <h2>Hardware &amp; Paper Configuration</h2>
+    <div style="padding: 14px; background: #faf9fb; border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 18px;">
+      <div style="font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; letter-spacing: 0.5px;">Active Thermal Printer</div>
+      <div style="font-size: 18px; font-weight: 800; color: var(--accent); margin-top: 4px;" id="currentPrinterDisplay">
+        {{ current_printer or 'System Default / Spooler' }}
+      </div>
+      <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+        Width: <strong>{{ thermal_width or '80mm' }}</strong> (ESC/POS auto-cut enabled)
       </div>
     </div>
 
@@ -27,7 +84,7 @@
       <input type="hidden" name="action" value="save_printer">
 
       <label>
-        Select Printer
+        Thermal Printer Name / Port
         <select name="printer_name" id="printerSelect">
           <option value="__SYSTEM_DEFAULT__" {% if current_printer == '__SYSTEM_DEFAULT__' or not current_printer %}selected{% endif %}>
             ★ System Default Thermal Printer
@@ -47,44 +104,121 @@
       </label>
 
       <div style="display: flex; gap: 10px; margin-top: 10px;">
-        <button class="btn primary" type="submit">Save Default Printer</button>
-        <button class="btn secondary" type="button" onclick="testThermalPrint()">Test Print (Slip)</button>
+        <button class="btn primary" type="submit">Save Settings</button>
+        <button class="btn secondary" type="button" onclick="testThermalPrint()">Browser Slip Test</button>
       </div>
     </form>
   </section>
-
-  <!-- ── How Silent / Fast Printing Works ── -->
-  <section class="panel">
-    <h2>Fast Printing Instructions</h2>
-    <div style="font-size: 13px; line-height: 1.7; color: var(--ink);">
-      <p><strong>1. Seamless POS Printing:</strong></p>
-      <p style="color: var(--muted);">
-        When you click <strong>"Save &amp; Print Bill"</strong> on the billing screen, the app immediately saves the bill and invokes the print action in an invisible background frame.
-      </p>
-
-      <p style="margin-top: 14px;"><strong>2. Zero-Dialog / 1-Click Printing in Chrome / Edge (Kiosk Mode):</strong></p>
-      <p style="color: var(--muted);">
-        To make Google Chrome or Edge print straight to your thermal printer with <strong>zero dialogs</strong> (instant 0-second print):
-      </p>
-      <div style="background: #25212a; color: #f8eaf0; padding: 12px 14px; border-radius: 8px; font-family: monospace; font-size: 12px; margin: 8px 0;">
-        --kiosk-printing
-      </div>
-      <p style="color: var(--muted); font-size: 12px;">
-        Add <code>--kiosk-printing</code> to your Chrome shortcut target or launch Chrome with kiosk printing enabled. The browser will automatically send receipts directly to your default thermal printer without asking.
-      </p>
-
-      <p style="margin-top: 14px;"><strong>3. Save Only Option:</strong></p>
-      <p style="color: var(--muted);">
-        Click <strong>"Save Only"</strong> whenever a customer does not need a paper receipt. The bill will be saved to database and the POS screen resets instantly.
-      </p>
-    </div>
-  </section>
 </div>
+
+<!-- ── Recent Print Queue & Jobs ── -->
+<section class="panel" style="margin-top: 24px;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+    <div>
+      <h2 style="margin: 0;">Recent Print Queue &amp; History</h2>
+      <p class="muted" style="font-size: 12px; margin-top: 2px;">Real-time queue tracking for mobile and PC prints.</p>
+    </div>
+    <button class="btn secondary" style="font-size: 12px; padding: 4px 10px;" onclick="window.location.reload();">Refresh Queue</button>
+  </div>
+
+  {% if recent_jobs %}
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Job ID</th>
+          <th>Bill No</th>
+          <th>Width</th>
+          <th>Status</th>
+          <th>Printed By</th>
+          <th>Created Time</th>
+          <th>Attempts</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for j in recent_jobs %}
+        <tr>
+          <td><code style="font-size: 11px;">{{ j.job_id }}</code></td>
+          <td><strong>{{ j.bill_no }}</strong></td>
+          <td>{{ j.thermal_width }}</td>
+          <td>
+            {% if j.status == 'Printed' %}
+              <span class="badge" style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0;">✓ Printed</span>
+            {% elif j.status == 'Printing' %}
+              <span class="badge" style="background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe;">⏳ Printing</span>
+            {% elif j.status == 'Print Pending' %}
+              <span class="badge" style="background: #fffbeb; color: #92400e; border: 1px solid #fde68a;">⌛ Pending</span>
+            {% else %}
+              <span class="badge" style="background: #fef2f2; color: #991b1b; border: 1px solid #fecaca;">✕ Failed</span>
+              {% if j.error_message %}<div style="font-size: 10px; color: #dc2626; margin-top: 2px;">{{ j.error_message }}</div>{% endif %}
+            {% endif %}
+          </td>
+          <td>{{ j.printed_by or 'Staff' }}</td>
+          <td style="font-size: 12px; color: var(--muted);">{{ j.created_at[:19].replace('T', ' ') }}</td>
+          <td>{{ j.attempts }}</td>
+          <td>
+            {% if j.status != 'Printed' %}
+            <button class="btn secondary" style="padding: 3px 8px; font-size: 11px;" onclick="retryJob('{{ j.job_id }}')">Retry</button>
+            {% else %}
+            <span style="color: var(--muted); font-size: 12px;">Done</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted" style="text-align: center; padding: 24px;">No print jobs recorded yet. When staff creates a bill with "Save &amp; Print", it will appear here.</p>
+  {% endif %}
+</section>
+
+<!-- ── Instructions on Setting up PC Print Service ── -->
+<section class="panel" style="margin-top: 24px;">
+  <h2>Counter PC Print Service Setup Guide</h2>
+  <div style="font-size: 13px; line-height: 1.7; color: var(--ink);">
+    <p><strong>How the PC-Based Wi-Fi Thermal Print Integration Works:</strong></p>
+    <ol style="margin-left: 20px; color: var(--muted);">
+      <li>The USB thermal printer is connected to your Counter PC.</li>
+      <li>Run <code>pc_print_service.py</code> in the background on the Counter PC.</li>
+      <li>Staff on their Android phone connect to the shop Wi-Fi and tap <strong>"Save &amp; Print"</strong> on the mobile app.</li>
+      <li>The backend queues the thermal receipt. The PC service instantly picks it up and prints it out with zero clicks or dialogs!</li>
+    </ol>
+    <div style="background: #25212a; color: #f8eaf0; padding: 12px 14px; border-radius: 8px; font-family: monospace; font-size: 12px; margin: 12px 0;">
+      cd pc_print_service<br>
+      pip install -r requirements.txt<br>
+      python3 pc_print_service.py
+    </div>
+  </div>
+</section>
 
 <!-- Hidden test print frame -->
 <iframe id="testPrintFrame" style="position:fixed; top:-9999px; left:-9999px; width:1px; height:1px;"></iframe>
 
 <script>
+function copyApiToken() {
+  const input = document.getElementById('apiTokenInput');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => {
+    alert('PC Print Service API Token copied to clipboard!');
+  });
+}
+
+function retryJob(jobId) {
+  fetch('/api/print-jobs/' + encodeURIComponent(jobId) + '/retry', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert('Print job requeued successfully.');
+        window.location.reload();
+      } else {
+        alert('Error: ' + (data.error || 'Failed to retry.'));
+      }
+    })
+    .catch(err => alert('Network error: ' + err));
+}
+
 function testThermalPrint() {
   const frame = document.getElementById('testPrintFrame');
   const now = new Date().toLocaleString();

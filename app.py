@@ -1,11 +1,16 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, make_response, session
+from flask import Flask, render_template, request, redirect, url_for, flash, make_response, session, jsonify
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
 from datetime import datetime, date, timedelta
 import os
 import json
+import hmac
+import hashlib
+import base64
+import time
 from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -307,6 +312,71 @@ def init_db():
                         INSERT INTO inventory (category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (*p, now_iso))
+
+                # App settings, users and print jobs tables
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'staff',
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE TABLE IF NOT EXISTS print_jobs (
+                    id SERIAL PRIMARY KEY,
+                    job_id TEXT UNIQUE NOT NULL,
+                    bill_id INTEGER REFERENCES bills(id) ON DELETE CASCADE,
+                    bill_no TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'Print Pending',
+                    printer_name TEXT DEFAULT '',
+                    thermal_width TEXT NOT NULL DEFAULT '80mm',
+                    receipt_text TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    error_message TEXT DEFAULT '',
+                    printed_by TEXT DEFAULT 'Staff',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status);
+                CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at);
+                """)
+
+                # Seed admin and staff users if missing
+                cur.execute("SELECT COUNT(*) AS c FROM users")
+                if cur.fetchone()["c"] == 0:
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    admin_h = generate_password_hash("iread@123", method="pbkdf2:sha256")
+                    staff_h = generate_password_hash("iread@staff123", method="pbkdf2:sha256")
+                    cur.execute("""
+                    INSERT INTO users (username, password_hash, role, name, created_at, is_active)
+                    VALUES ('admin', %s, 'admin', 'Admin', %s, 1),
+                           ('staff', %s, 'staff', 'Staff Counter', %s, 1)
+                    """, (admin_h, now_iso, staff_h, now_iso))
+
+                # Default app settings
+                now_s = datetime.now().isoformat(timespec="seconds")
+                cur.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('printer_api_key', 'iread-print-token-2026', %s)
+                ON CONFLICT (key) DO NOTHING;
+                """, (now_s,))
+                cur.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('thermal_width', '80mm', %s)
+                ON CONFLICT (key) DO NOTHING;
+                """, (now_s,))
+                cur.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES ('default_printer', '__SYSTEM_DEFAULT__', %s)
+                ON CONFLICT (key) DO NOTHING;
+                """, (now_s,))
             conn.commit()
     except Exception as e:
         print(f"init_db skipped or failed: {e}")
@@ -327,14 +397,233 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# ── Auth Routes ──
+# ── Token Authentication & Security Helpers ──
+def generate_auth_token(user_id, username, role, name, expires_in=86400 * 30):
+    payload = {
+        "uid": user_id,
+        "username": username,
+        "role": role,
+        "name": name,
+        "exp": int(time.time()) + expires_in
+    }
+    payload_json = json.dumps(payload, separators=(',', ':'))
+    payload_b64 = base64.urlsafe_b64encode(payload_json.encode('utf-8')).decode('utf-8').rstrip('=')
+    signature = hmac.new(app.secret_key.encode('utf-8'), payload_b64.encode('utf-8'), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+def verify_auth_token(token):
+    if not token or '.' not in token:
+        return None
+    try:
+        parts = token.split('.')
+        if len(parts) != 2:
+            return None
+        payload_b64, signature = parts
+        expected_sig = hmac.new(app.secret_key.encode('utf-8'), payload_b64.encode('utf-8'), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        pad = len(payload_b64) % 4
+        if pad:
+            payload_b64 += '=' * (4 - pad)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode('utf-8')).decode('utf-8'))
+        if payload.get('exp', 0) < int(time.time()):
+            return None
+        return payload
+    except Exception:
+        return None
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif request.headers.get("X-Auth-Token"):
+            token = request.headers.get("X-Auth-Token").strip()
+        
+        user_data = verify_auth_token(token)
+        if not user_data:
+            if session.get("is_admin"):
+                user_data = {"uid": 1, "username": "admin", "role": "admin", "name": "Admin"}
+            else:
+                return jsonify({"success": False, "error": "Authentication required. Please log in."}), 401
+        
+        request.current_user = user_data
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_api_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif request.headers.get("X-Auth-Token"):
+            token = request.headers.get("X-Auth-Token").strip()
+        
+        user_data = verify_auth_token(token)
+        if not user_data:
+            if session.get("is_admin"):
+                user_data = {"uid": 1, "username": "admin", "role": "admin", "name": "Admin"}
+            else:
+                return jsonify({"success": False, "error": "Admin authentication required."}), 401
+        
+        if user_data.get("role") != "admin":
+            return jsonify({"success": False, "error": "Access denied. Admin privileges required."}), 403
+        
+        request.current_user = user_data
+        return f(*args, **kwargs)
+    return decorated
+
+def printer_service_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        printer_token = request.headers.get("X-Printer-Token", "").strip()
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            user_data = verify_auth_token(token)
+            if user_data and user_data.get("role") == "admin":
+                return f(*args, **kwargs)
+        
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM app_settings WHERE key='printer_api_key'")
+                row = cur.fetchone()
+                configured_token = row["value"] if row else "iread-print-token-2026"
+                if printer_token and hmac.compare_digest(printer_token, configured_token):
+                    return f(*args, **kwargs)
+        
+        return jsonify({"success": False, "error": "Invalid or missing printer authorization token."}), 401
+    return decorated
+
+# ── Thermal Receipt Formatter Helper ──
+def format_thermal_receipt(bill, items, thermal_width="80mm", shop_name="IREAD STATIONS", cashier="Staff"):
+    width = 32 if thermal_width == "58mm" else 42
+    lines = []
+    eq_border = "=" * width
+    dash_border = "-" * width
+    
+    lines.append(eq_border)
+    lines.append(shop_name.center(width))
+    tagline = "Print • Photocopy • Lamination" if width > 35 else "Print • Copy • Laminate"
+    lines.append(tagline.center(width))
+    lines.append(eq_border)
+    
+    bill_no = bill.get("bill_no", "")
+    created_at = bill.get("created_at", "")
+    try:
+        dt = datetime.fromisoformat(created_at)
+        dt_str = dt.strftime("%d/%m/%Y %I:%M %p")
+    except Exception:
+        dt_str = created_at
+    
+    cust = (bill.get("customer") or "Walk-in Customer").strip()
+    pay_method = bill.get("payment_method") or "Cash"
+    pay_status = bill.get("payment_status") or "Paid"
+    
+    if width >= 40:
+        lines.append(f"Bill No   : {bill_no}")
+        lines.append(f"Date/Time : {dt_str}")
+        lines.append(f"Customer  : {cust[:width-12]}")
+        lines.append(f"Cashier   : {cashier}")
+        lines.append(f"Payment   : {pay_method} ({pay_status})")
+    else:
+        lines.append(f"Bill : {bill_no}")
+        lines.append(f"Date : {dt_str}")
+        lines.append(f"Cust : {cust[:width-7]}")
+        lines.append(f"User : {cashier}")
+        lines.append(f"Pay  : {pay_method} ({pay_status})")
+    
+    lines.append(dash_border)
+    if width >= 40:
+        lines.append("Item                 Qty    Rate   Amount")
+        lines.append(dash_border)
+        for it in items:
+            name = it.get("service_name", "")
+            sides = it.get("sides", "Single")
+            s_abbr = "(D)" if sides.lower().startswith("double") else "(S)"
+            full_name = f"{name} {s_abbr}".strip()
+            qty = it.get("quantity", 1)
+            rate = f"{float(it.get('rate', 0)):.2f}"
+            amount = f"{float(it.get('line_total', 0)):.2f}"
+            if len(full_name) > 19:
+                lines.append(full_name)
+                lines.append(f"                    {qty:>4} {rate:>7} {amount:>8}")
+            else:
+                lines.append(f"{full_name:<19} {qty:>4} {rate:>7} {amount:>8}")
+    else:
+        lines.append("Item         Qty  Rate    Amount")
+        lines.append(dash_border)
+        for it in items:
+            name = it.get("service_name", "")
+            sides = it.get("sides", "Single")
+            s_abbr = "(D)" if sides.lower().startswith("double") else "(S)"
+            full_name = f"{name} {s_abbr}".strip()
+            qty = it.get("quantity", 1)
+            rate = f"{float(it.get('rate', 0)):.2f}"
+            amount = f"{float(it.get('line_total', 0)):.2f}"
+            if len(full_name) > 12:
+                lines.append(full_name)
+                lines.append(f"            {qty:>3} {rate:>6} {amount:>7}")
+            else:
+                lines.append(f"{full_name:<12} {qty:>3} {rate:>6} {amount:>7}")
+                
+    lines.append(dash_border)
+    subtotal = f"Rs. {float(bill.get('subtotal', 0)):.2f}"
+    discount = f"Rs. {float(bill.get('discount', 0)):.2f}"
+    total = f"Rs. {float(bill.get('total', 0)):.2f}"
+    paid = f"Rs. {float(bill.get('paid', 0)):.2f}"
+    balance = f"Rs. {float(bill.get('balance', 0)):.2f}"
+    
+    lines.append(f"{'Subtotal:':<15}{subtotal:>{width-15}}")
+    if float(bill.get("discount", 0)) > 0:
+        lines.append(f"{'Discount:':<15}{discount:>{width-15}}")
+    lines.append(dash_border)
+    lines.append(f"{'TOTAL:':<15}{total:>{width-15}}")
+    lines.append(f"{'PAID:':<15}{paid:>{width-15}}")
+    if float(bill.get("balance", 0)) > 0:
+        lines.append(f"{'BALANCE DUE:':<15}{balance:>{width-15}}")
+    lines.append(eq_border)
+    lines.append("Thank You! Visit Again".center(width))
+    lines.append(eq_border)
+    lines.append("\n\n\n\x1dVA0")
+    
+    return "\n".join(lines)
+
+# ── Auth Routes & API ──
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        # Check database users first
+        user_row = None
+        try:
+            with db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM users WHERE username = %s AND is_active = 1", (username,))
+                    user_row = cur.fetchone()
+        except Exception:
+            pass
+
+        if user_row and check_password_hash(user_row["password_hash"], password):
+            if user_row["role"] == "admin":
+                session["is_admin"] = True
+                session["username"] = user_row["username"]
+                flash("Welcome back, Admin!", "success")
+                next_url = request.args.get("next") or url_for("reports")
+                return redirect(next_url)
+            else:
+                session["is_admin"] = False
+                session["username"] = user_row["username"]
+                flash(f"Logged in as {user_row['name']}. Note: Full billing is also available on the Android Mobile App.", "info")
+                return redirect(url_for("index"))
+        elif username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
             session["is_admin"] = True
+            session["username"] = ADMIN_USERNAME
             flash("Welcome back, Admin!", "success")
             next_url = request.args.get("next") or url_for("reports")
             return redirect(next_url)
@@ -345,13 +634,65 @@ def login():
 @app.route("/logout")
 def logout():
     session.pop("is_admin", None)
+    session.pop("username", None)
     flash("Logged out successfully.", "success")
     return redirect(url_for("index"))
 
-# ── Desktop / Install App Route ──
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    
+    if not username or not password:
+        return jsonify({"success": False, "error": "Username and password required."}), 400
+        
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE username=%s AND is_active=1", (username,))
+            user = cur.fetchone()
+            
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"success": False, "error": "Invalid username or password."}), 401
+        
+    token = generate_auth_token(user["id"], user["username"], user["role"], user["name"])
+    return jsonify({
+        "success": True,
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "name": user["name"]
+        }
+    })
+
+@app.route("/api/auth/me", methods=["GET"])
+@token_required
+def api_auth_me():
+    user = getattr(request, "current_user", {})
+    return jsonify({
+        "success": True,
+        "user": user
+    })
+
+# ── Desktop / Install App & APK Download Route ──
 @app.route("/install")
 def install_page():
-    return render_template("install.html")
+    apk_path = APP_DIR / "static" / "iread-billing-staff.apk"
+    apk_exists = apk_path.exists()
+    apk_size_mb = round(apk_path.stat().st_size / (1024 * 1024), 1) if apk_exists else 0
+    return render_template("install.html", apk_exists=apk_exists, apk_size_mb=apk_size_mb)
+
+@app.route("/download/apk")
+def download_apk():
+    from flask import send_from_directory
+    apk_dir = APP_DIR / "static"
+    apk_filename = "iread-billing-staff.apk"
+    if not (apk_dir / apk_filename).exists():
+        flash("Android APK is currently being generated. Please check back in a moment.", "info")
+        return redirect(url_for("install_page"))
+    return send_from_directory(apk_dir, apk_filename, as_attachment=True, download_name="iread-billing-staff.apk")
 
 # ── Paper & Stock Inventory Helper Functions ──
 
@@ -1572,21 +1913,42 @@ def receipt(bill_id):
             edit_count = cur.fetchone()["c"]
     return render_template("receipt.html", bill=bill, items=items, payments=payments, auto_print=auto_print, is_admin=is_admin, edit_count=edit_count)
 
-# ── API: High-Speed Billing Endpoint (Instant Save & Print) ──
+# ── API: Service Catalog Endpoint ──
+@app.route("/api/services", methods=["GET"])
+def api_get_services():
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, name, rate, double_rate, extra_copy_rate, print_type, paper_size, sheets_per_unit, paper_id
+            FROM services
+            WHERE active = 1
+            ORDER BY print_type, name
+            """)
+            services = cur.fetchall()
+    return jsonify({"success": True, "services": services})
+
+# ── API: High-Speed Billing Endpoint (Instant Save & Print / Mobile App) ──
 @app.post("/api/create-bill")
 def create_bill_api():
     try:
+        # Check auth token if present
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else request.headers.get("X-Auth-Token", "").strip()
+        user_data = verify_auth_token(token) if token else None
+        user_name = user_data.get("name") if user_data else ("Admin" if session.get("is_admin") else "Staff")
+        
         data = request.get_json(force=True) or {}
-        customer = (data.get("customer") or "").strip()
-        payment = data.get("payment_method") or "Cash"
+        customer = (data.get("customer") or "Walk-in Customer").strip()
+        payment = (data.get("payment_method") or "Cash").strip()
         discount = money(data.get("discount", 0))
         paid_input = str(data.get("paid", "")).strip()
         req_status = (data.get("payment_status") or "").strip()
+        action = (data.get("action") or "save_only").strip().lower()
         notes = (data.get("notes") or "").strip()
         raw_items = data.get("items") or []
 
         if not raw_items:
-            return {"success": False, "error": "Cart is empty."}, 400
+            return jsonify({"success": False, "error": "Cart is empty."}), 400
 
         items = []
         subtotal = 0.0
@@ -1613,8 +1975,8 @@ def create_bill_api():
                 for it in raw_items:
                     s_id = str(it.get("service_id", "")).strip()
                     try:
-                        qty = max(1, int(it.get("qty", 1)))
-                        pages_per_copy = max(1, int(it.get("pages", 1))) if it.get("pages") else 1
+                        qty = max(1, int(it.get("qty") or it.get("quantity") or 1))
+                        pages_per_copy = max(1, int(it.get("pages") or it.get("pages_per_copy") or 1))
                         rate = money(it.get("rate", 0))
                     except (ValueError, TypeError):
                         continue
@@ -1631,7 +1993,7 @@ def create_bill_api():
                             pass
 
                     if not service:
-                        s_raw_name = (it.get("name") or "").strip()
+                        s_raw_name = (it.get("service_name") or it.get("name") or "").strip()
                         if s_raw_name:
                             cur.execute("SELECT * FROM services WHERE LOWER(TRIM(REPLACE(name, '—', '-'))) = LOWER(TRIM(REPLACE(%s, '—', '-')))", (s_raw_name,))
                             service = cur.fetchone()
@@ -1643,7 +2005,7 @@ def create_bill_api():
                         paper_id = service.get("paper_id")
                         sheets_per_unit = service.get("sheets_per_unit", 1)
                     else:
-                        s_name = (it.get("name") or "Custom Service").strip()
+                        s_name = (it.get("service_name") or it.get("name") or "Custom Service").strip()
                         p_type = "service"
                         p_size = "A4"
                         paper_id = None
@@ -1653,7 +2015,7 @@ def create_bill_api():
                     if sheets_per_unit == 0:
                         sheets = 0
                     else:
-                        sheets = qty
+                        sheets = qty * pages_per_copy
 
                     # Line total & rate calculation:
                     # Configurable tiered pricing (e.g. Print B&W A4: first copy + additional copies)
@@ -1665,8 +2027,11 @@ def create_bill_api():
                     elif it.get("line_total") is not None and str(it.get("line_total")).strip() != "":
                         line_total = money(it.get("line_total"))
                     else:
-                        line_total = money(qty * rate)
-                    color_units = qty if p_type in ("color", "photo") else 0
+                        unit_rate = float(service["double_rate"] if (service and is_double and service.get("double_rate") is not None) else (service["rate"] if service else rate))
+                        line_total = money(qty * pages_per_copy * unit_rate)
+                        rate = money(unit_rate)
+
+                    color_units = qty * pages_per_copy if p_type in ("color", "photo") else 0
 
                     unit_cost = 0.0
                     matched_inv_id = paper_id
@@ -1688,7 +2053,7 @@ def create_bill_api():
                         "print_type": p_type,
                         "paper_size": p_size,
                         "quantity": qty,
-                        "pages_per_copy": 1,
+                        "pages_per_copy": pages_per_copy,
                         "sides": sides,
                         "rate": rate,
                         "line_total": line_total,
@@ -1701,20 +2066,25 @@ def create_bill_api():
                     subtotal += line_total
 
                 if not items:
-                    return {"success": False, "error": "No valid items in bill."}, 400
+                    return jsonify({"success": False, "error": "No valid items in bill."}), 400
 
                 subtotal = money(subtotal)
                 discount = min(max(discount, 0), subtotal)
                 total = money(subtotal - discount)
-                if paid_input == "":
+                if req_status.lower() == "unpaid":
+                    paid = 0.0
+                    balance = total
+                    payment_status = "Unpaid"
+                elif req_status.lower() == "paid":
                     paid = total
+                    balance = 0.0
+                    payment_status = "Paid"
                 else:
-                    paid = min(max(money(paid_input), 0), total)
-                balance = money(total - paid)
-
-                if req_status:
-                    payment_status = req_status
-                else:
+                    if paid_input == "":
+                        paid = total
+                    else:
+                        paid = min(max(money(paid_input), 0), total)
+                    balance = money(total - paid)
                     if paid <= 0.001:
                         payment_status = "Unpaid"
                     elif balance <= 0.001:
@@ -1737,9 +2107,9 @@ def create_bill_api():
                     cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
 
                 cur.execute(
-                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes)
+                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes, biller_name, original_created_at)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes, user_name, now_iso)
                 )
                 bill_id = cur.fetchone()["id"]
 
@@ -1748,14 +2118,14 @@ def create_bill_api():
                     cur.execute("""
                         INSERT INTO bill_payments(bill_id, amount, payment_method, recorded_by, notes, created_at)
                         VALUES(%s, %s, %s, %s, 'Initial bill payment', %s)
-                    """, (bill_id, paid, payment, 'Admin' if session.get('is_admin') else 'Staff', now_iso))
+                    """, (bill_id, paid, payment, user_name, now_iso))
 
                 for x in items:
                     cur.execute(
-                        """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit)
-                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit, inventory_id)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                         (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
-                         x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"])
+                         x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"], x["inventory_id"])
                     )
 
                     inv_id = x.get("inventory_id")
@@ -1767,30 +2137,360 @@ def create_bill_api():
                             new_avail = max(0, inv_row['available_sheets'] - sheets_used)
                             cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, inv_id))
                             cur.execute("""
-                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
-                            VALUES (%s, 'SALE', %s, %s, %s, %s, %s)
-                            """, (inv_id, -sheets_used, new_avail, bill_no, f"Billed: {x['service_name']} ({x['sides']})", now_iso))
+                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at, recorded_by)
+                            VALUES (%s, 'SALE', %s, %s, %s, %s, %s, %s)
+                            """, (inv_id, -sheets_used, new_avail, bill_no, f"Billed: {x['service_name']} ({x['sides']})", now_iso, user_name))
+
+                # PC Wi-Fi Print queueing if save_and_print
+                print_job_info = None
+                if action == "save_and_print":
+                    cur.execute("SELECT value FROM app_settings WHERE key='thermal_width'")
+                    w_row = cur.fetchone()
+                    thermal_width = w_row["value"] if w_row else "80mm"
+                    
+                    cur.execute("SELECT value FROM app_settings WHERE key='default_printer'")
+                    p_row = cur.fetchone()
+                    printer_name = p_row["value"] if p_row else "__SYSTEM_DEFAULT__"
+                    
+                    bill_dict = {
+                        "bill_no": bill_no,
+                        "created_at": now_iso,
+                        "customer": customer,
+                        "payment_method": payment,
+                        "payment_status": payment_status,
+                        "subtotal": subtotal,
+                        "discount": discount,
+                        "total": total,
+                        "paid": paid,
+                        "balance": balance
+                    }
+                    receipt_text = format_thermal_receipt(bill_dict, items, thermal_width=thermal_width, cashier=user_name)
+                    job_id = f"PJ{datetime.now().strftime('%y%m%d%H%M%S')}_{bill_id}"
+                    
+                    cur.execute("""
+                    INSERT INTO print_jobs (job_id, bill_id, bill_no, status, printer_name, thermal_width, receipt_text, printed_by, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'Print Pending', %s, %s, %s, %s, %s, %s)
+                    """, (job_id, bill_id, bill_no, printer_name, thermal_width, receipt_text, user_name, now_iso, now_iso))
+                    
+                    print_job_info = {
+                        "job_id": job_id,
+                        "status": "Print Pending",
+                        "thermal_width": thermal_width,
+                        "attempts": 0
+                    }
 
             conn.commit()
 
         receipt_url = url_for("receipt", bill_id=bill_id)
         dash_stats = get_today_dashboard_stats()
-        return {
+        return jsonify({
             "ok": True,
             "success": True,
             "bill_id": bill_id,
             "bill_no": bill_no,
+            "subtotal": subtotal,
+            "discount": discount,
             "total": total,
             "paid": paid,
             "balance": balance,
             "payment_status": payment_status,
+            "action": action,
+            "print_job": print_job_info,
             "receipt_url": receipt_url,
             "today_count": dash_stats["today_count"],
             "today_total": dash_stats["today_total"],
             "today_total_formatted": dash_stats["today_total_formatted"]
-        }
+        })
     except Exception as e:
-        return {"success": False, "error": str(e)}, 400
+        return jsonify({"success": False, "error": str(e)}), 400
+
+# ── API: Print Job Status & Retry ──
+@app.route("/api/print-jobs/<job_id>", methods=["GET"])
+def api_get_print_job(job_id):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT job_id, bill_id, bill_no, status, printer_name, thermal_width, 
+                   attempts, error_message, printed_by, created_at, updated_at
+            FROM print_jobs WHERE job_id=%s
+            """, (job_id,))
+            job = cur.fetchone()
+            if not job:
+                return jsonify({"success": False, "error": "Print job not found."}), 404
+    return jsonify({"success": True, "job": job})
+
+@app.route("/api/print-jobs/<job_id>/retry", methods=["POST"])
+def api_retry_print_job(job_id):
+    now = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, attempts FROM print_jobs WHERE job_id=%s", (job_id,))
+            job = cur.fetchone()
+            if not job:
+                return jsonify({"success": False, "error": "Print job not found."}), 404
+            cur.execute("""
+            UPDATE print_jobs
+            SET status = 'Print Pending', error_message = '', updated_at = %s
+            WHERE job_id = %s
+            RETURNING job_id, bill_id, bill_no, status, attempts, error_message, updated_at
+            """, (now, job_id))
+            updated_job = cur.fetchone()
+            conn.commit()
+    return jsonify({"success": True, "job": updated_job})
+
+# ── API: Staff Sales Summary (Strictly No Cost or Profit) ──
+@app.route("/api/staff/sales", methods=["GET"])
+@token_required
+def api_staff_sales():
+    today_str = date.today().isoformat()
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT COUNT(*) AS count, COALESCE(SUM(total), 0) AS total_sales
+            FROM bills
+            WHERE is_deleted = 0 AND SUBSTRING(created_at, 1, 10) = %s
+            """, (today_str,))
+            row = cur.fetchone()
+            today_count = int(row["count"] or 0)
+            today_sales = float(row["total_sales"] or 0.0)
+
+            cur.execute("""
+            SELECT id, bill_no, created_at, customer, subtotal, discount, total, 
+                   paid, balance, payment_status, payment_method, biller_name
+            FROM bills
+            WHERE is_deleted = 0
+            ORDER BY id DESC
+            LIMIT 20
+            """)
+            bills = cur.fetchall()
+
+    return jsonify({
+        "success": True,
+        "today_date": today_str,
+        "today_sales": today_sales,
+        "today_bill_count": today_count,
+        "bills": bills
+    })
+
+# ── API: Staff Stock View (Strictly No Cost or Purchase Price) ──
+@app.route("/api/staff/stock", methods=["GET"])
+@token_required
+def api_staff_stock():
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, item_name, category, size_spec, bundles, sheets_per_bundle,
+                   total_sheets, available_sheets, reorder_level
+            FROM inventory
+            WHERE is_active = 1
+            ORDER BY category, item_name
+            """)
+            rows = cur.fetchall()
+            items = []
+            for r in rows:
+                avail = int(r["available_sheets"] or 0)
+                reorder = int(r["reorder_level"] or 0)
+                items.append({
+                    "id": r["id"],
+                    "item_name": r["item_name"],
+                    "category": r["category"],
+                    "size_spec": r["size_spec"],
+                    "bundles": r["bundles"],
+                    "sheets_per_bundle": r["sheets_per_bundle"],
+                    "total_sheets": r["total_sheets"],
+                    "available_sheets": avail,
+                    "reorder_level": reorder,
+                    "is_low_stock": (avail <= reorder)
+                })
+
+    return jsonify({"success": True, "items": items})
+
+# ── API: PC Print Service Endpoints ──
+@app.route("/api/printer/heartbeat", methods=["POST"])
+@printer_service_required
+def api_printer_heartbeat():
+    data = request.get_json(silent=True) or {}
+    now = datetime.now().isoformat(timespec="seconds")
+    info = {
+        "hostname": (data.get("hostname") or "Unknown").strip(),
+        "os": (data.get("os") or "Unknown").strip(),
+        "printer_name": (data.get("printer_name") or "").strip(),
+        "version": (data.get("version") or "1.0").strip(),
+        "last_seen": now
+    }
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('pc_print_service_status', 'online', %s)
+            ON CONFLICT (key) DO UPDATE SET value='online', updated_at=EXCLUDED.updated_at
+            """, (now,))
+            cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('pc_print_service_last_seen', %s, %s)
+            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+            """, (now, now))
+            cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('pc_print_service_info', %s, %s)
+            ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+            """, (json.dumps(info), now))
+            conn.commit()
+    return jsonify({"success": True, "status": "online", "timestamp": now})
+
+@app.route("/api/printer/pending-jobs", methods=["GET"])
+@printer_service_required
+def api_printer_pending_jobs():
+    now = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, job_id, bill_id, bill_no, status, printer_name, thermal_width, 
+                   receipt_text, attempts, created_at
+            FROM print_jobs
+            WHERE status = 'Print Pending'
+            ORDER BY id ASC
+            LIMIT 5
+            FOR UPDATE SKIP LOCKED
+            """)
+            jobs = cur.fetchall()
+            for j in jobs:
+                cur.execute("""
+                UPDATE print_jobs
+                SET status = 'Printing', updated_at = %s
+                WHERE id = %s
+                """, (now, j["id"]))
+            conn.commit()
+    return jsonify({"success": True, "jobs": jobs})
+
+@app.route("/api/printer/jobs/<job_id>/status", methods=["POST"])
+@printer_service_required
+def api_printer_update_job_status(job_id):
+    data = request.get_json(silent=True) or {}
+    new_status = data.get("status")
+    if new_status not in ("Printed", "Print Failed", "Print Pending", "Printing"):
+        return jsonify({"success": False, "error": "Invalid status."}), 400
+    
+    error_msg = (data.get("error_message") or data.get("error") or "").strip()
+    printer_name = (data.get("printer_name") or "").strip()
+    now = datetime.now().isoformat(timespec="seconds")
+    
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, attempts FROM print_jobs WHERE job_id=%s", (job_id,))
+            job = cur.fetchone()
+            if not job:
+                return jsonify({"success": False, "error": "Job not found."}), 404
+            
+            attempts = job["attempts"] + 1 if new_status in ("Printed", "Print Failed") else job["attempts"]
+            update_fields = ["status = %s", "attempts = %s", "updated_at = %s"]
+            params = [new_status, attempts, now]
+            
+            if error_msg:
+                update_fields.append("error_message = %s")
+                params.append(error_msg)
+            elif new_status == "Printed":
+                update_fields.append("error_message = ''")
+                
+            if printer_name:
+                update_fields.append("printer_name = %s")
+                params.append(printer_name)
+                
+            params.append(job_id)
+            cur.execute(f"UPDATE print_jobs SET {', '.join(update_fields)} WHERE job_id = %s", tuple(params))
+            conn.commit()
+            
+    return jsonify({"success": True, "job_id": job_id, "status": new_status})
+
+@app.route("/api/printer/status", methods=["GET"])
+def api_printer_status():
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM app_settings WHERE key IN ('default_printer', 'thermal_width', 'printer_api_key', 'pc_print_service_last_seen', 'pc_print_service_info')")
+            settings = {r["key"]: r["value"] for r in cur.fetchall()}
+            
+            last_seen_str = settings.get("pc_print_service_last_seen", "")
+            is_online = False
+            if last_seen_str:
+                try:
+                    last_seen_dt = datetime.fromisoformat(last_seen_str)
+                    if (datetime.now() - last_seen_dt).total_seconds() <= 35:
+                        is_online = True
+                except Exception:
+                    pass
+            
+            pc_info = {}
+            if settings.get("pc_print_service_info"):
+                try:
+                    pc_info = json.loads(settings["pc_print_service_info"])
+                except Exception:
+                    pass
+            
+            cur.execute("SELECT COUNT(*) AS c FROM print_jobs WHERE status = 'Print Pending'")
+            pending_count = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) AS c FROM print_jobs WHERE status = 'Print Failed'")
+            failed_count = cur.fetchone()["c"]
+            
+    return jsonify({
+        "success": True,
+        "is_online": is_online,
+        "status": "online" if is_online else "offline",
+        "last_seen": last_seen_str,
+        "default_printer": settings.get("default_printer", "__SYSTEM_DEFAULT__"),
+        "thermal_width": settings.get("thermal_width", "80mm"),
+        "printer_api_key": settings.get("printer_api_key", "iread-print-token-2026"),
+        "pc_info": pc_info,
+        "pending_count": pending_count,
+        "failed_count": failed_count
+    })
+
+@app.route("/api/printer/test-print", methods=["POST"])
+@admin_api_required
+def api_printer_test_print():
+    now = datetime.now()
+    now_iso = now.isoformat(timespec="seconds")
+    job_id = f"PJ_TEST_{now.strftime('%y%m%d%H%M%S')}"
+    
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key='thermal_width'")
+            w_row = cur.fetchone()
+            thermal_width = w_row["value"] if w_row else "80mm"
+            
+            cur.execute("SELECT value FROM app_settings WHERE key='default_printer'")
+            p_row = cur.fetchone()
+            printer_name = p_row["value"] if p_row else "__SYSTEM_DEFAULT__"
+            
+            test_bill = {
+                "bill_no": "TEST-SLIP",
+                "created_at": now_iso,
+                "customer": "PC Print Service Test",
+                "payment_method": "Wi-Fi Spooler",
+                "payment_status": "Verified",
+                "subtotal": 0.0,
+                "discount": 0.0,
+                "total": 0.0,
+                "paid": 0.0,
+                "balance": 0.0
+            }
+            test_items = [
+                {"service_name": "Wi-Fi Thermal Link", "sides": "Single", "quantity": 1, "rate": 0.0, "line_total": 0.0},
+                {"service_name": "Pattern Test OK", "sides": "Single", "quantity": 1, "rate": 0.0, "line_total": 0.0}
+            ]
+            receipt_text = format_thermal_receipt(test_bill, test_items, thermal_width=thermal_width, cashier="Admin Test")
+            
+            cur.execute("""
+            INSERT INTO print_jobs (job_id, bill_no, status, printer_name, thermal_width, receipt_text, printed_by, created_at, updated_at)
+            VALUES (%s, 'TEST-SLIP', 'Print Pending', %s, %s, %s, 'Admin', %s, %s)
+            """, (job_id, printer_name, thermal_width, receipt_text, now_iso, now_iso))
+            conn.commit()
+            
+    return jsonify({
+        "success": True,
+        "job_id": job_id,
+        "status": "Print Pending",
+        "message": "Test print queued for PC Print Service."
+    })
 
 # ── Printer Configuration & Test Route (Admin) ──
 @app.route("/printer-settings", methods=["GET", "POST"])
@@ -1798,9 +2498,9 @@ def create_bill_api():
 def printer_settings_page():
     with db() as conn:
         with conn.cursor() as cur:
+            now = datetime.now().isoformat(timespec="seconds")
             if request.method == "POST":
                 action = request.form.get("action")
-                now = datetime.now().isoformat(timespec="seconds")
                 if action == "save_printer":
                     p_name = request.form.get("printer_name", "").strip()
                     p_width = request.form.get("thermal_width", "80mm").strip()
@@ -1818,6 +2518,52 @@ def printer_settings_page():
                     flash(f"Printer configuration saved: {p_name} ({p_width}).", "success")
                     return redirect(url_for("printer_settings_page"))
 
+                elif action == "regenerate_api_key":
+                    import secrets
+                    new_token = f"iread-{secrets.token_hex(12)}"
+                    cur.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('printer_api_key', %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                    """, (new_token, now))
+                    conn.commit()
+                    flash("New PC Print Service API Token generated successfully.", "success")
+                    return redirect(url_for("printer_settings_page"))
+
+                elif action == "test_print_pc":
+                    job_id = f"PJ_TEST_{datetime.now().strftime('%y%m%d%H%M%S')}"
+                    cur.execute("SELECT value FROM app_settings WHERE key='thermal_width'")
+                    w_row = cur.fetchone()
+                    t_width = w_row["value"] if w_row else "80mm"
+                    cur.execute("SELECT value FROM app_settings WHERE key='default_printer'")
+                    p_row = cur.fetchone()
+                    pr_name = p_row["value"] if p_row else "__SYSTEM_DEFAULT__"
+
+                    test_bill = {
+                        "bill_no": "TEST-PRINT",
+                        "created_at": now,
+                        "customer": "Admin Console Test",
+                        "payment_method": "PC Wi-Fi Service",
+                        "payment_status": "Verified",
+                        "subtotal": 0.0,
+                        "discount": 0.0,
+                        "total": 0.0,
+                        "paid": 0.0,
+                        "balance": 0.0
+                    }
+                    test_items = [
+                        {"service_name": "Wi-Fi Thermal Printer", "sides": "Single", "quantity": 1, "rate": 0.0, "line_total": 0.0},
+                        {"service_name": "Test Pattern OK", "sides": "Single", "quantity": 1, "rate": 0.0, "line_total": 0.0}
+                    ]
+                    receipt_text = format_thermal_receipt(test_bill, test_items, thermal_width=t_width, cashier="Admin")
+                    cur.execute("""
+                    INSERT INTO print_jobs (job_id, bill_no, status, printer_name, thermal_width, receipt_text, printed_by, created_at, updated_at)
+                    VALUES (%s, 'TEST-PRINT', 'Print Pending', %s, %s, %s, 'Admin', %s, %s)
+                    """, (job_id, pr_name, t_width, receipt_text, now, now))
+                    conn.commit()
+                    flash(f"Test print job queued (Job ID: {job_id}). PC Print Service will process it.", "info")
+                    return redirect(url_for("printer_settings_page"))
+
             cur.execute("SELECT value FROM app_settings WHERE key='default_printer'")
             p_row = cur.fetchone()
             current_printer = p_row['value'] if p_row else '__SYSTEM_DEFAULT__'
@@ -1825,6 +2571,35 @@ def printer_settings_page():
             cur.execute("SELECT value FROM app_settings WHERE key='thermal_width'")
             w_row = cur.fetchone()
             thermal_width = w_row['value'] if w_row else '80mm'
+
+            cur.execute("SELECT value FROM app_settings WHERE key='printer_api_key'")
+            k_row = cur.fetchone()
+            printer_api_key = k_row['value'] if k_row else 'iread-print-token-2026'
+
+            cur.execute("SELECT value FROM app_settings WHERE key='pc_print_service_last_seen'")
+            ls_row = cur.fetchone()
+            last_seen_str = ls_row['value'] if ls_row else ''
+
+            cur.execute("SELECT value FROM app_settings WHERE key='pc_print_service_info'")
+            info_row = cur.fetchone()
+            pc_info = {}
+            if info_row and info_row['value']:
+                try:
+                    pc_info = json.loads(info_row['value'])
+                except Exception:
+                    pass
+
+            is_online = False
+            if last_seen_str:
+                try:
+                    dt = datetime.fromisoformat(last_seen_str)
+                    if (datetime.now() - dt).total_seconds() <= 35:
+                        is_online = True
+                except Exception:
+                    pass
+
+            cur.execute("SELECT * FROM print_jobs ORDER BY id DESC LIMIT 15")
+            recent_jobs = cur.fetchall()
 
     # Discover available system printers via lpstat (if available on host)
     available_printers = []
@@ -1842,7 +2617,12 @@ def printer_settings_page():
         "printer_settings.html",
         current_printer=current_printer,
         thermal_width=thermal_width,
-        available_printers=available_printers
+        available_printers=available_printers,
+        printer_api_key=printer_api_key,
+        pc_is_online=is_online,
+        last_seen_str=last_seen_str,
+        pc_info=pc_info,
+        recent_jobs=recent_jobs
     )
 
 def get_period_date_range(period, custom_start=None, custom_end=None):

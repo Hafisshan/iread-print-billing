@@ -1,35 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Install App | Iread{% endblock %}
+{% block title %}Install Staff App &amp; Download APK | Iread{% endblock %}
 {% block content %}
-<div class="install-wrapper">
-  <div class="panel" style="max-width: 600px; margin: 20px auto; text-align: center; padding: 36px 24px;">
-    <img src="{{ url_for('static', filename='icon.svg') }}" alt="Iread Logo" style="width: 88px; height: 88px; margin-bottom: 16px;">
-    <h1 style="font-size: 24px; margin-bottom: 8px;">Install Iread Billing App</h1>
-    <p class="muted" style="margin-bottom: 24px;">
-      Add Iread Print Billing directly to your desktop or home screen for 1-click fast touch access without browser tabs.
+<div class="install-wrapper" style="max-width: 800px; margin: 20px auto; padding: 0 16px;">
+  <!-- ── 1. Android Mobile Staff APK Card ── -->
+  <div class="panel" style="padding: 28px 24px; margin-bottom: 24px; border-top: 4px solid #6d28d9; text-align: center;">
+    <div style="width: 72px; height: 72px; border-radius: 18px; background: #6d28d9; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 36px; box-shadow: 0 4px 12px rgba(109,40,217,0.3);">
+      📱
+    </div>
+    <h1 style="font-size: 22px; font-weight: 800; margin-bottom: 6px; color: var(--ink);">
+      Iread Billing — Android Staff App
+    </h1>
+    <p class="muted" style="font-size: 13px; max-width: 520px; margin: 0 auto 20px; line-height: 1.6;">
+      Native Android Staff application built with React Native &amp; Expo. Enables wireless counter billing, copies calculation, discounts, Petpooja-style Paid/Unpaid tracking, and instant PC-based Wi-Fi thermal printing.
     </p>
 
-    <div id="pwaInstallBox" style="margin-bottom: 28px;">
-      <button id="pwaInstallBtn" class="pos-submit-btn" style="max-width: 280px; margin: 0 auto; display: none;">
-        📥 Install Desktop App
+    <!-- Download APK CTA Button -->
+    <div style="margin-bottom: 24px;">
+      <a href="{{ url_for('download_apk') }}" class="btn primary" style="font-size: 15px; font-weight: 800; padding: 12px 28px; border-radius: 10px; display: inline-flex; align-items: center; gap: 8px;">
+        <span>📥</span> Download Android APK (Staff v1.0)
+      </a>
+      {% if apk_exists and apk_size_mb %}
+        <div style="font-size: 11px; color: var(--muted); margin-top: 6px;">
+          Standalone APK File Size: ~{{ apk_size_mb }} MB
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Credentials & Connection Box -->
+    <div style="text-align: left; background: #faf9fb; border: 1.5px solid var(--line); border-radius: 12px; padding: 18px; font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid #f0edf4; padding-bottom: 8px;">
+        <span style="font-weight: 700; color: var(--ink);">Staff Login Credentials:</span>
+        <span style="background: #ede9fe; color: #6d28d9; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 800;">ROLE: STAFF</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; font-family: monospace;">
+        <div style="background: #ffffff; padding: 8px 12px; border-radius: 8px; border: 1px solid #e5e7eb;">
+          <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Username</div>
+          <div style="font-size: 14px; font-weight: 700; color: #111827;">staff</div>
+        </div>
+        <div style="background: #ffffff; padding: 8px 12px; border-radius: 8px; border: 1px solid #e5e7eb;">
+          <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Password</div>
+          <div style="font-size: 14px; font-weight: 700; color: #111827;">iread@staff123</div>
+        </div>
+      </div>
+
+      <div style="font-size: 12px; color: var(--muted); line-height: 1.6;">
+        <strong style="color: var(--ink);">Staff Wi-Fi Setup:</strong>
+        <ol style="margin-left: 18px; margin-top: 4px; margin-bottom: 0;">
+          <li>Connect staff Android phone to the counter Wi-Fi network.</li>
+          <li>Open the APK and enter your shop server URL (e.g. <code>http://&lt;PC_IP&gt;:5000</code>).</li>
+          <li>Login and tap <strong>"Save &amp; Print"</strong> to send thermal receipts directly to the Counter PC's thermal printer!</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 2. Desktop Chrome / PWA Option ── -->
+  <div class="panel" style="padding: 24px; text-align: center;">
+    <h2 style="font-size: 18px; margin-bottom: 6px;">Desktop PWA / Browser Fast Access</h2>
+    <p class="muted" style="font-size: 12px; margin-bottom: 16px;">
+      For Counter PCs and tablets running Chrome, Edge, or Safari:
+    </p>
+
+    <div id="pwaInstallBox" style="margin-bottom: 16px;">
+      <button id="pwaInstallBtn" class="btn secondary" style="display: none; margin: 0 auto;">
+        📥 Install Desktop Shortcut
       </button>
-      <div id="pwaInstalledMsg" style="display: none; color: #16784b; font-weight: 600;">
-        ✓ App is already installed or running as standalone!
+      <div id="pwaInstalledMsg" style="display: none; color: #16784b; font-weight: 600; font-size: 13px;">
+        ✓ Running in Standalone / Desktop Mode
       </div>
     </div>
 
-    <div style="text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 13px;">
-      <h3 style="margin: 0 0 10px; font-size: 14px;">How to install manually:</h3>
-      <ul style="padding-left: 20px; margin: 0; line-height: 1.8; color: var(--ink);">
-        <li><strong>Google Chrome / Edge (Desktop):</strong> Click the install icon <span style="font-family: monospace;">(⊕ / 📥)</span> in the address bar at the top-right, then click <em>Install</em>.</li>
-        <li><strong>Safari on Mac:</strong> Click <em>File</em> → <em>Add to Dock...</em></li>
-        <li><strong>Android (Chrome):</strong> Tap menu (3 dots) → <em>Add to Home Screen / Install app</em>.</li>
-        <li><strong>iPhone / iPad (Safari):</strong> Tap Share button → <em>Add to Home Screen</em>.</li>
-      </ul>
-    </div>
-
-    <div style="margin-top: 24px;">
-      <a href="{{ url_for('index') }}" class="btn primary">Open Billing Screen</a>
+    <div style="margin-top: 14px;">
+      <a href="{{ url_for('index') }}" class="btn secondary" style="font-size: 13px;">← Return to Billing</a>
     </div>
   </div>
 </div>
@@ -45,7 +87,7 @@ if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
-    installBtn.style.display = 'block';
+    installBtn.style.display = 'inline-block';
   });
 
   installBtn.addEventListener('click', async () => {

@@ -1,0 +1,10 @@
+{
+  "server_url": "http://127.0.0.1:5000",
+  "api_token": "iread-print-token-2026",
+  "printer_name": "__DEFAULT__",
+  "poll_interval_seconds": 2,
+  "heartbeat_interval_seconds": 10,
+  "thermal_width": "80mm",
+  "save_printed_slips_to_disk": true,
+  "simulation_mode": false
+}
