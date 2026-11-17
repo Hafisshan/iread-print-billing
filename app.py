@@ -4249,5 +4249,7 @@ def backup():
 
 if __name__ == "__main__":
     init_db()
-    print("Iread Print Billing is running at http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 5001))
+    print(f"Iread Print Billing is running at http://{host}:{port} (LAN: http://192.168.1.131:{port})")
+    app.run(host=host, port=port, debug=False)
