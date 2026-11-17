@@ -44,6 +44,7 @@
         data-name="{{ s.name }}"
         data-rate="{{ s.rate }}"
         data-doublerate="{{ s.double_rate or '' }}"
+        data-extrarate="{{ s.extra_copy_rate or '' }}"
         data-type="{{ s.print_type }}"
         data-size="{{ s.paper_size }}"
         data-cat="{{ s.print_type }}">
@@ -53,6 +54,9 @@
           {{ s.rate | inr }}
           {% if s.double_rate %}
             <span style="font-size: 10px; color: var(--muted); font-weight: 500;">/ Dbl {{ s.double_rate | inr }}</span>
+          {% endif %}
+          {% if s.extra_copy_rate %}
+            <span style="display:block; font-size: 10px; color: #b84a00; font-weight: 700;">+{{ s.extra_copy_rate | inr }}/addl</span>
           {% endif %}
         </span>
       </button>
@@ -181,6 +185,7 @@
     <div class="modal-line-total">
       Estimated Sheets: <span id="mSheets" style="font-weight:700; color:var(--ink);">1</span> &nbsp;|&nbsp;
       Amount: <strong id="mAmount">₹0.00</strong>
+      <div id="mPricingNote" style="font-size:11px; margin-top:4px; display:none;"></div>
     </div>
   </div>
 
@@ -218,6 +223,18 @@ document.getElementById('catTabs').addEventListener('click', e => {
   });
 });
 
+/* ─────────── Pricing Helper: Tiered & Standard ─────────── */
+function calcItemLineTotal(item, qty, sides) {
+  const isDouble = String(sides).toLowerCase().includes('double');
+  if (item && item.extraCopyRate && parseFloat(item.extraCopyRate) > 0) {
+    const firstCopy = isDouble ? (parseFloat(item.doubleRate) || 15) : (parseFloat(item.singleRate) || 10);
+    const extraCopy = parseFloat(item.extraCopyRate) || 5;
+    return firstCopy + Math.max(0, qty - 1) * extraCopy;
+  }
+  const unitRate = (isDouble && item.doubleRate) ? parseFloat(item.doubleRate) : (parseFloat(item.singleRate) || parseFloat(item.rate) || 0);
+  return qty * unitRate;
+}
+
 /* ─────────── Tile tap → open modal ─────────── */
 document.getElementById('tileGrid').addEventListener('click', e => {
   const tile = e.target.closest('.tile');
@@ -225,11 +242,13 @@ document.getElementById('tileGrid').addEventListener('click', e => {
   editingIdx = null;
   const sRate = parseFloat(tile.dataset.rate) || 0;
   const dRate = tile.dataset.doublerate ? parseFloat(tile.dataset.doublerate) : sRate;
+  const extraRate = tile.dataset.extrarate ? parseFloat(tile.dataset.extrarate) : null;
   openModal({
     id: tile.dataset.id,
     name: tile.dataset.name,
     singleRate: sRate,
     doubleRate: dRate,
+    extraCopyRate: extraRate,
     rate: sRate,
     type: tile.dataset.type,
     size: tile.dataset.size,
@@ -247,6 +266,7 @@ if (addCustomBtn) {
       name: '',
       singleRate: 0,
       doubleRate: 0,
+      extraCopyRate: null,
       rate: 0,
       type: 'service',
       size: '-',
@@ -275,7 +295,7 @@ function openModal(item) {
   document.getElementById('mQty').value = item.qty || 1;
   
   setSides(item.sides || 'Single');
-  if (editingIdx !== null && item.rate !== undefined && item.rate !== null) {
+  if (editingIdx !== null && item.rate !== undefined && item.rate !== null && !item.extraCopyRate) {
     document.getElementById('mRate').value = item.rate;
   } else {
     updateRateForSides(item.sides || 'Single');
@@ -309,10 +329,16 @@ function setSides(val) {
 function updateRateForSides(sidesVal) {
   if (!currentItemConfig) return;
   const isDouble = sidesVal.toLowerCase().includes('double');
-  if (isDouble && currentItemConfig.doubleRate) {
-    document.getElementById('mRate').value = currentItemConfig.doubleRate;
-  } else if (currentItemConfig.singleRate !== undefined) {
-    document.getElementById('mRate').value = currentItemConfig.singleRate;
+  if (currentItemConfig.extraCopyRate) {
+    const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
+    const total = calcItemLineTotal(currentItemConfig, qty, sidesVal);
+    document.getElementById('mRate').value = (total / qty).toFixed(2);
+  } else {
+    if (isDouble && currentItemConfig.doubleRate) {
+      document.getElementById('mRate').value = currentItemConfig.doubleRate;
+    } else if (currentItemConfig.singleRate !== undefined) {
+      document.getElementById('mRate').value = currentItemConfig.singleRate;
+    }
   }
 }
 
@@ -341,7 +367,6 @@ document.querySelectorAll('.step-btn').forEach(btn => {
 
 function updateModalAmount() {
   const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
-  const rate = parseFloat(document.getElementById('mRate').value) || 0;
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
   const isDouble = sides.toLowerCase().includes('double');
 
@@ -354,7 +379,23 @@ function updateModalAmount() {
   }
   document.getElementById('mSheets').textContent = sheets + ' sheet' + (sheets === 1 ? '' : 's');
 
-  const total = qty * rate;
+  let total = 0;
+  const pNote = document.getElementById('mPricingNote');
+  if (currentItemConfig && currentItemConfig.extraCopyRate) {
+    total = calcItemLineTotal(currentItemConfig, qty, sides);
+    document.getElementById('mRate').value = (total / qty).toFixed(2);
+    if (pNote) {
+      pNote.style.display = 'block';
+      const firstPrice = isDouble ? (currentItemConfig.doubleRate || 15) : (currentItemConfig.singleRate || 10);
+      const extraPrice = currentItemConfig.extraCopyRate || 5;
+      pNote.innerHTML = `<span style="color:#b84a00; font-weight:700;">Pricing rule:</span> ₹${firstPrice} (1st copy) + ₹${extraPrice}/additional copy`;
+    }
+  } else {
+    const rate = parseFloat(document.getElementById('mRate').value) || 0;
+    total = qty * rate;
+    if (pNote) pNote.style.display = 'none';
+  }
+
   document.getElementById('mAmount').textContent = fmt(total);
 }
 
@@ -362,28 +403,41 @@ function updateModalAmount() {
 document.getElementById('modalAdd').addEventListener('click', () => {
   const name  = document.getElementById('mName').value.trim() || 'Item';
   const qty   = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
-  const rate  = parseFloat(document.getElementById('mRate').value) || 0;
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
   const type  = currentItemConfig ? (currentItemConfig.type || 'service') : (document.getElementById('mCategory').value || 'service');
   const size  = currentItemConfig ? (currentItemConfig.size || '-') : '-';
   const id    = currentItemConfig ? currentItemConfig.id : 'custom';
-  const singleRate = currentItemConfig && currentItemConfig.singleRate !== undefined ? currentItemConfig.singleRate : rate;
-  const doubleRate = currentItemConfig && currentItemConfig.doubleRate !== undefined ? currentItemConfig.doubleRate : rate;
-  const lineTotal = qty * rate;
+  const singleRate = currentItemConfig && currentItemConfig.singleRate !== undefined ? currentItemConfig.singleRate : 0;
+  const doubleRate = currentItemConfig && currentItemConfig.doubleRate !== undefined ? currentItemConfig.doubleRate : 0;
+  const extraCopyRate = currentItemConfig && currentItemConfig.extraCopyRate !== undefined ? currentItemConfig.extraCopyRate : null;
+
+  let lineTotal = 0;
+  let rate = 0;
+  if (extraCopyRate) {
+    lineTotal = calcItemLineTotal(currentItemConfig, qty, sides);
+    rate = parseFloat((lineTotal / qty).toFixed(2));
+  } else {
+    rate = parseFloat(document.getElementById('mRate').value) || 0;
+    lineTotal = qty * rate;
+  }
 
   if (editingIdx !== null && editingIdx >= 0 && editingIdx < cart.length) {
-    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, rate, singleRate, doubleRate, sides, lineTotal };
+    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, rate, singleRate, doubleRate, extraCopyRate, sides, lineTotal };
   } else {
     const existingIdx = cart.findIndex(item =>
       ((item.id && id !== 'custom' && item.id === id) || (item.name === name)) &&
-      item.sides === sides &&
-      item.rate === rate
+      item.sides === sides
     );
     if (existingIdx !== -1) {
       cart[existingIdx].qty += qty;
-      cart[existingIdx].lineTotal = cart[existingIdx].qty * cart[existingIdx].rate;
+      if (cart[existingIdx].extraCopyRate) {
+        cart[existingIdx].lineTotal = calcItemLineTotal(cart[existingIdx], cart[existingIdx].qty, cart[existingIdx].sides);
+        cart[existingIdx].rate = parseFloat((cart[existingIdx].lineTotal / cart[existingIdx].qty).toFixed(2));
+      } else {
+        cart[existingIdx].lineTotal = cart[existingIdx].qty * cart[existingIdx].rate;
+      }
     } else {
-      cart.push({ id, name, type, size, qty, rate, singleRate, doubleRate, sides, lineTotal });
+      cart.push({ id, name, type, size, qty, rate, singleRate, doubleRate, extraCopyRate, sides, lineTotal });
     }
   }
   closeModal();
@@ -409,12 +463,15 @@ function renderCart() {
   cart.forEach((item, idx) => {
     const div = document.createElement('div');
     div.className = 'cart-item';
+    const metaDesc = item.extraCopyRate 
+      ? `${item.qty} ${item.qty === 1 ? 'copy' : 'copies'} · ${item.sides}` 
+      : `${item.qty} copies × ₹${Number(item.rate).toFixed(2)} · ${item.sides}`;
     div.innerHTML = `
       <div class="ci-info" data-idx="${idx}">
         <span class="ci-badge ${item.type}">${item.type.toUpperCase()}</span>
         <div class="ci-detail">
           <span class="ci-name">${escapeHtml(item.name)}</span>
-          <span class="ci-meta">${item.qty} copies × ₹${Number(item.rate).toFixed(2)} · ${item.sides}</span>
+          <span class="ci-meta">${metaDesc}</span>
         </div>
       </div>
       <div class="ci-right">
@@ -453,7 +510,12 @@ function renderCart() {
       if (idx >= 0 && idx < cart.length) {
         if (cart[idx].qty > 1) {
           cart[idx].qty -= 1;
-          cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
+          if (cart[idx].extraCopyRate) {
+            cart[idx].lineTotal = calcItemLineTotal(cart[idx], cart[idx].qty, cart[idx].sides);
+            cart[idx].rate = parseFloat((cart[idx].lineTotal / cart[idx].qty).toFixed(2));
+          } else {
+            cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
+          }
           renderCart();
         }
       }
@@ -467,7 +529,12 @@ function renderCart() {
       const idx = parseInt(btn.dataset.idx);
       if (idx >= 0 && idx < cart.length) {
         cart[idx].qty += 1;
-        cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
+        if (cart[idx].extraCopyRate) {
+          cart[idx].lineTotal = calcItemLineTotal(cart[idx], cart[idx].qty, cart[idx].sides);
+          cart[idx].rate = parseFloat((cart[idx].lineTotal / cart[idx].qty).toFixed(2));
+        } else {
+          cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
+        }
         renderCart();
       }
     });
@@ -608,7 +675,8 @@ async function handleBillingAction(shouldPrint) {
       name: i.name,
       qty: i.qty,
       sides: i.sides,
-      rate: i.rate
+      rate: i.rate,
+      line_total: i.lineTotal
     }))
   };
 

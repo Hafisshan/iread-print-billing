@@ -281,6 +281,14 @@ def init_db():
                 FROM purchases p
                 WHERE p.item_name IS NOT NULL AND p.item_name != ''
                   AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.id);
+
+                -- Service tiered pricing columns & rule for Print B&W A4
+                ALTER TABLE services ADD COLUMN IF NOT EXISTS double_rate REAL DEFAULT NULL;
+                ALTER TABLE services ADD COLUMN IF NOT EXISTS extra_copy_rate REAL DEFAULT NULL;
+                UPDATE services 
+                SET rate = 10.0, double_rate = 15.0, extra_copy_rate = 5.0
+                WHERE (id = 52 OR LOWER(TRIM(name)) = 'print b&w — a4' OR LOWER(TRIM(name)) = 'print b&w - a4')
+                  AND (extra_copy_rate IS NULL OR double_rate != 15.0);
                 """)
 
                 # Seed essential paper stock if empty
@@ -1622,6 +1630,12 @@ def create_bill_api():
                         except (ValueError, TypeError):
                             pass
 
+                    if not service:
+                        s_raw_name = (it.get("name") or "").strip()
+                        if s_raw_name:
+                            cur.execute("SELECT * FROM services WHERE LOWER(TRIM(REPLACE(name, '—', '-'))) = LOWER(TRIM(REPLACE(%s, '—', '-')))", (s_raw_name,))
+                            service = cur.fetchone()
+
                     if service:
                         s_name = service["name"]
                         p_type = service["print_type"]
@@ -1641,7 +1655,17 @@ def create_bill_api():
                     else:
                         sheets = qty
 
-                    line_total = money(qty * rate)
+                    # Line total & rate calculation:
+                    # Configurable tiered pricing (e.g. Print B&W A4: first copy + additional copies)
+                    if service and service.get("extra_copy_rate") is not None and float(service.get("extra_copy_rate") or 0) > 0:
+                        first_copy = float(service["double_rate"] if (is_double and service.get("double_rate") is not None) else service["rate"])
+                        extra_copy = float(service["extra_copy_rate"])
+                        line_total = money(first_copy + max(0, qty - 1) * extra_copy)
+                        rate = money(line_total / qty)
+                    elif it.get("line_total") is not None and str(it.get("line_total")).strip() != "":
+                        line_total = money(it.get("line_total"))
+                    else:
+                        line_total = money(qty * rate)
                     color_units = qty if p_type in ("color", "photo") else 0
 
                     unit_cost = 0.0
@@ -2133,7 +2157,7 @@ def calculate_bill_corrections(cur, bill, old_items, data):
         if key and key not in inv_by_size:
             inv_by_size[key] = r['id']
 
-    cur.execute("SELECT id, name, rate, double_rate, print_type, paper_size, sheets_per_unit, paper_id FROM services")
+    cur.execute("SELECT id, name, rate, double_rate, extra_copy_rate, print_type, paper_size, sheets_per_unit, paper_id FROM services")
     services_rows = cur.fetchall()
     serv_by_id = {s['id']: dict(s) for s in services_rows}
     serv_by_name = {s['name'].strip().lower(): dict(s) for s in services_rows}
@@ -2181,11 +2205,24 @@ def calculate_bill_corrections(cur, bill, old_items, data):
         rate = money(it.get("rate", 0))
 
         s_obj = serv_by_name.get(s_name.lower())
-        if rate <= 0.001 and s_obj:
-            is_double = sides.lower().startswith("double")
-            rate = s_obj["double_rate"] if (is_double and s_obj.get("double_rate")) else s_obj["rate"]
+        if not s_obj:
+            norm_s_name = s_name.lower().replace("—", "-").replace("–", "-")
+            for sn, so in serv_by_name.items():
+                if sn.replace("—", "-").replace("–", "-") == norm_s_name:
+                    s_obj = so
+                    break
 
-        line_total = money(qty * pages_per_copy * rate)
+        is_double = sides.lower().startswith("double")
+        if s_obj and s_obj.get("extra_copy_rate") is not None and float(s_obj.get("extra_copy_rate") or 0) > 0:
+            first_copy = float(s_obj["double_rate"] if (is_double and s_obj.get("double_rate") is not None) else s_obj["rate"])
+            extra_copy = float(s_obj["extra_copy_rate"])
+            line_total = money(first_copy + max(0, qty - 1) * extra_copy)
+            rate = money(line_total / qty)
+        else:
+            if rate <= 0.001 and s_obj:
+                rate = s_obj["double_rate"] if (is_double and s_obj.get("double_rate")) else s_obj["rate"]
+            line_total = money(qty * pages_per_copy * rate)
+
         subtotal += line_total
 
         # Paper sheets calculation: 1 copy = 1 sheet for physical jobs
@@ -3276,6 +3313,8 @@ def services():
                         rate = money(request.form.get("rate", 0))
                         double_rate_val = request.form.get("double_rate", "").strip()
                         double_rate = money(double_rate_val) if double_rate_val else None
+                        extra_copy_val = request.form.get("extra_copy_rate", "").strip()
+                        extra_copy_rate = money(extra_copy_val) if extra_copy_val else None
                         print_type = request.form.get("print_type", "bw")
                         paper_size = request.form.get("paper_size", "A4").strip() or "A4"
                         sheets_per_unit = max(0, int(request.form.get("sheets_per_unit", 1)))
@@ -3286,9 +3325,9 @@ def services():
                             raise ValueError("Invalid name or rate.")
 
                         cur.execute(
-                            """INSERT INTO services(name, rate, double_rate, print_type, paper_size, sheets_per_unit, paper_id, active) 
-                               VALUES(%s,%s,%s,%s,%s,%s,%s,1)""",
-                            (name, rate, double_rate, print_type, paper_size, sheets_per_unit, paper_id)
+                            """INSERT INTO services(name, rate, double_rate, extra_copy_rate, print_type, paper_size, sheets_per_unit, paper_id, active) 
+                               VALUES(%s,%s,%s,%s,%s,%s,%s,%s,1)""",
+                            (name, rate, double_rate, extra_copy_rate, print_type, paper_size, sheets_per_unit, paper_id)
                         )
                         conn.commit()
                         flash("Service added.", "success")
@@ -3303,6 +3342,7 @@ def services():
                     names = request.form.getlist("service_name[]")
                     rates = request.form.getlist("service_rate[]")
                     double_rates = request.form.getlist("service_double_rate[]")
+                    extra_copy_rates = request.form.getlist("service_extra_copy_rate[]")
                     types = request.form.getlist("service_type[]")
                     sizes = request.form.getlist("service_size[]")
                     paper_ids = request.form.getlist("service_paper_id[]")
@@ -3315,6 +3355,8 @@ def services():
                             clean_rate = max(0, money(rates[i]))
                             d_val = double_rates[i].strip() if i < len(double_rates) else ""
                             clean_double_rate = money(d_val) if d_val else None
+                            e_val = extra_copy_rates[i].strip() if i < len(extra_copy_rates) else ""
+                            clean_extra_rate = money(e_val) if e_val else None
                             clean_type = types[i].strip() if types[i] else "bw"
                             clean_size = sizes[i].strip() if sizes[i] else "A4"
                             p_id_str = paper_ids[i].strip() if i < len(paper_ids) else ""
@@ -3323,10 +3365,21 @@ def services():
                             if clean_name:
                                 cur.execute("""
                                     UPDATE services 
-                                    SET name=%s, rate=%s, double_rate=%s, print_type=%s, paper_size=%s, paper_id=%s
+                                    SET name=%s, rate=%s, double_rate=%s, extra_copy_rate=%s, print_type=%s, paper_size=%s, paper_id=%s
                                     WHERE id=%s
-                                """, (clean_name, clean_rate, clean_double_rate, clean_type, clean_size, p_id, sid))
+                                """, (clean_name, clean_rate, clean_double_rate, clean_extra_rate, clean_type, clean_size, p_id, sid))
                                 updated_count += 1
+
+                                if sid == 52 or ("print b&w" in clean_name.lower() and "a4" in clean_name.lower()):
+                                    now_ts = datetime.now().isoformat(timespec="seconds")
+                                    cur.execute("""
+                                        INSERT INTO app_settings (key, value, updated_at)
+                                        VALUES 
+                                            ('pricing_rule_print_bw_a4_single', %s, %s),
+                                            ('pricing_rule_print_bw_a4_double', %s, %s),
+                                            ('pricing_rule_print_bw_a4_extra', %s, %s)
+                                        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                                    """, (str(clean_rate), now_ts, str(clean_double_rate or clean_rate), now_ts, str(clean_extra_rate or 0), now_ts))
                         except Exception as e:
                             print(f"Error updating service: {e}")
 

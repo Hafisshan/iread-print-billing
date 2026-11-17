@@ -26,6 +26,10 @@
       <input type="number" min="0" step="0.01" name="double_rate" placeholder="Optional if single only">
     </label>
     <label>
+      Extra Copy Rate (₹)
+      <input type="number" min="0" step="0.01" name="extra_copy_rate" placeholder="Optional tiered addl rate">
+    </label>
+    <label>
       Category
       <select name="print_type">
         <option value="bw">Black &amp; white</option>
@@ -73,6 +77,7 @@
             <th>Size</th>
             <th>Single Rate (₹)</th>
             <th>Double Rate (₹)</th>
+            <th>Extra Copy (₹)</th>
             <th>Linked Paper (Stock &amp; Cost)</th>
             <th>Status</th>
             <th>Actions</th>
@@ -101,6 +106,9 @@
             </td>
             <td>
               <input class="rate-edit" name="service_double_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.double_rate) if s.double_rate else '' }}" placeholder="None" title="Double side rate">
+            </td>
+            <td>
+              <input class="rate-edit" name="service_extra_copy_rate[]" type="number" min="0" step="0.01" value="{{ '%.2f'|format(s.extra_copy_rate) if s.extra_copy_rate else '' }}" placeholder="None" title="Extra copy rate for tiered pricing">
             </td>
             <td>
               <select name="service_paper_id[]" style="min-width: 160px; font-size: 11px;">
