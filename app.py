@@ -83,7 +83,7 @@ def get_db_pool():
         with _POOL_LOCK:
             if _DB_POOL is None:
                 _DB_POOL = ThreadedConnectionPool(
-                    minconn=2,
+                    minconn=1,
                     maxconn=20,
                     dsn=DATABASE_URL,
                     cursor_factory=psycopg2.extras.RealDictCursor,
@@ -398,6 +398,7 @@ def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status);
                 CREATE INDEX IF NOT EXISTS idx_print_jobs_created_at ON print_jobs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_bills_deleted_created ON bills(is_deleted, created_at);
                 """)
 
                 # Seed admin and staff users if missing
@@ -519,6 +520,78 @@ def format_ist_date_str(dt_input):
     if not dt:
         return str(dt_input or '')[:10]
     return dt.strftime("%Y-%m-%d")
+
+def ist_dates_to_utc_range(start_date_str, end_date_str):
+    """
+    Given YYYY-MM-DD date strings in Asia/Kolkata (IST), converts them to
+    exact UTC ISO strings (start_utc_iso, end_utc_iso) so that:
+        created_at >= start_utc_iso AND created_at < end_utc_iso
+    efficiently queries rows belonging to the IST period using B-tree index
+    without full table sequential scans or to_char() calls.
+    """
+    start_utc = None
+    if start_date_str:
+        try:
+            s_clean = str(start_date_str).strip()[:10]
+            s_dt = datetime.strptime(s_clean, "%Y-%m-%d").replace(tzinfo=IST_TZ)
+            start_utc = s_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            pass
+
+    end_utc = None
+    if end_date_str:
+        try:
+            e_clean = str(end_date_str).strip()[:10]
+            e_dt = (datetime.strptime(e_clean, "%Y-%m-%d") + timedelta(days=1)).replace(tzinfo=IST_TZ)
+            end_utc = e_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            pass
+
+    return start_utc, end_utc
+
+# ── In-Memory Fast Cache for Services Catalog ──
+_SERVICES_CACHE = None
+_SERVICES_CACHE_TIME = 0
+_SERVICES_CACHE_TTL = 300  # 5 minutes, invalidated immediately on service modification
+
+def get_cached_services(conn=None):
+    global _SERVICES_CACHE, _SERVICES_CACHE_TIME
+    now = time.time()
+    if _SERVICES_CACHE is not None and (now - _SERVICES_CACHE_TIME) < _SERVICES_CACHE_TTL:
+        return _SERVICES_CACHE
+
+    def _query(c):
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT id, name, rate, double_rate, extra_copy_rate, print_type, paper_size, sheets_per_unit, paper_id, active
+                FROM services
+                ORDER BY print_type, name
+            """)
+            rows = cur.fetchall()
+            by_id = {r['id']: r for r in rows}
+            by_name = {r['name'].strip().lower().replace('—', '-'): r for r in rows}
+            active_list = [r for r in rows if r.get('active', 1) == 1]
+            return {
+                "rows": rows,
+                "active_list": active_list,
+                "by_id": by_id,
+                "by_name": by_name
+            }
+
+    if conn:
+        cache_data = _query(conn)
+    else:
+        with db() as c:
+            cache_data = _query(c)
+
+    _SERVICES_CACHE = cache_data
+    _SERVICES_CACHE_TIME = now
+    return _SERVICES_CACHE
+
+def invalidate_services_cache():
+    global _SERVICES_CACHE, _SERVICES_CACHE_TIME
+    _SERVICES_CACHE = None
+    _SERVICES_CACHE_TIME = 0
 
 @app.template_filter("ist_datetime")
 def filter_ist_datetime(dt_input, fmt="%Y-%m-%d %H:%M:%S"):
@@ -1719,17 +1792,22 @@ def inventory_page():
             for r in items:
                 r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
 
-            # Active items for metrics and datalist
-            cur.execute("""
-            SELECT id, category, item_name, size_spec, available_sheets, reorder_level, is_active,
-                   ROUND((cost / NULLIF(total_sheets, 0))::numeric, 3) AS cost_per_sheet
-            FROM inventory 
-            WHERE is_active = 1
-            ORDER BY category, item_name
-            """)
-            active_items = cur.fetchall()
-            for r in active_items:
-                r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
+            # Active items for metrics and datalist (reuse items if already active to save remote roundtrip)
+            if status_filter == "active":
+                active_items = items
+            elif status_filter == "all":
+                active_items = [r for r in items if r.get('is_active') == 1]
+            else:
+                cur.execute("""
+                SELECT id, category, item_name, size_spec, available_sheets, reorder_level, is_active,
+                       ROUND((cost / NULLIF(total_sheets, 0))::numeric, 3) AS cost_per_sheet
+                FROM inventory 
+                WHERE is_active = 1
+                ORDER BY category, item_name
+                """)
+                active_items = cur.fetchall()
+                for r in active_items:
+                    r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
 
             total_items = len(active_items)
             total_available_sheets = sum(row.get("available_sheets", 0) for row in active_items)
@@ -1865,25 +1943,34 @@ def maintenance_page():
     return render_template("maintenance.html", expenses=rows, total_count=total_count, total_expense=total_expense, today=date.today().isoformat())
 
 # ── Dashboard Statistics Helper ──
-def get_today_dashboard_stats():
+def get_today_dashboard_stats(conn=None):
     today = get_ist_today_str()
-    with db() as conn:
+    start_utc_iso, end_utc_iso = ist_dates_to_utc_range(today, today)
+    
+    def _run(cur):
+        cur.execute("""
+            SELECT COALESCE(SUM(total), 0) AS today_total,
+                   COUNT(*) AS today_count
+            FROM bills 
+            WHERE created_at >= %s AND created_at < %s 
+              AND is_deleted = 0
+        """, (start_utc_iso, end_utc_iso))
+        row = cur.fetchone()
+        t_total = float(row['today_total'] if row else 0.0)
+        t_count = int(row['today_count'] if row else 0)
+        return {
+            "today_total": t_total,
+            "today_count": t_count,
+            "today_total_formatted": inr(t_total)
+        }
+
+    if conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COALESCE(SUM(total), 0) AS today_total,
-                       COUNT(*) AS today_count
-                FROM bills 
-                WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') = %s 
-                  AND is_deleted = 0
-            """, (today,))
-            row = cur.fetchone()
-            t_total = float(row['today_total'] if row else 0.0)
-            t_count = int(row['today_count'] if row else 0)
-            return {
-                "today_total": t_total,
-                "today_count": t_count,
-                "today_total_formatted": inr(t_total)
-            }
+            return _run(cur)
+    else:
+        with db() as c:
+            with c.cursor() as cur:
+                return _run(cur)
 
 @app.route("/api/dashboard-stats")
 def dashboard_stats_api():
@@ -1899,10 +1986,7 @@ def index():
     if not DATABASE_URL:
         return "DATABASE_URL environment variable is missing.", 500
     try:
-        with db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM services WHERE active=1 ORDER BY print_type, name")
-                services = cur.fetchall()
+        services = get_cached_services()["active_list"]
         dash_stats = get_today_dashboard_stats()
         return render_template("index.html", services=services, today_total=dash_stats["today_total"], today_count=dash_stats["today_count"])
     except Exception as e:
@@ -1924,6 +2008,7 @@ def create_bill():
     items = []
     subtotal = 0.0
     total_bill_paper_cost = 0.0
+    cached_services = get_cached_services()
 
     with db() as conn:
         with conn.cursor() as cur:
@@ -1960,8 +2045,7 @@ def create_bill():
 
                 service = None
                 if service_id_int:
-                    cur.execute("SELECT * FROM services WHERE id=%s", (service_id_int,))
-                    service = cur.fetchone()
+                    service = cached_services['by_id'].get(service_id_int)
 
                 sides = sides_list[i] if i < len(sides_list) else "Single"
                 is_double = sides.lower().startswith("double")
@@ -2043,24 +2127,28 @@ def create_bill():
             bill_profit = money(total - total_bill_paper_cost)
 
             now_iso = to_utc_iso()
-            bill_no = "IR" + get_ist_now().strftime("%y%m%d%H%M%S")
+            ist_now = get_ist_now()
+            bill_no = "IR" + ist_now.strftime("%y%m%d%H%M%S")
 
-            # Avoid bill_no collisions
-            original = bill_no
-            suffix   = 1
-            cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
-            while cur.fetchone():
-                bill_no = f"{original}{suffix}"
-                suffix += 1
-                cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
-
-            # Insert Bill record with payment_status, paper_cost and profit
-            cur.execute(
-                """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes)
-                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes)
-            )
-            bill_id = cur.fetchone()["id"]
+            # Insert Bill record with atomic savepoint to guarantee uniqueness with zero roundtrip check
+            cur.execute("SAVEPOINT sp_bill_form_insert")
+            try:
+                cur.execute(
+                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes)
+                )
+                bill_id = cur.fetchone()["id"]
+                cur.execute("RELEASE SAVEPOINT sp_bill_form_insert")
+            except psycopg2.IntegrityError:
+                cur.execute("ROLLBACK TO SAVEPOINT sp_bill_form_insert")
+                bill_no = f"IR{ist_now.strftime('%y%m%d%H%M%S')}{ist_now.microsecond // 1000:03d}"
+                cur.execute(
+                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes)
+                )
+                bill_id = cur.fetchone()["id"]
 
             # Record initial payment in bill_payments if paid > 0
             if paid > 0:
@@ -2069,28 +2157,55 @@ def create_bill():
                     VALUES(%s, %s, %s, %s, 'Initial bill payment', %s)
                 """, (bill_id, paid, payment, 'Admin' if session.get('is_admin') else 'Staff', now_iso))
 
-            # Insert Bill Items
-            for x in items:
-                cur.execute(
-                    """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
-                     x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"])
-                )
+            # Batch Insert Bill Items
+            item_tuples = [
+                (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
+                 x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"], x.get("inventory_id"))
+                for x in items
+            ]
+            psycopg2.extras.execute_values(
+                cur,
+                """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit, inventory_id)
+                   VALUES %s""",
+                item_tuples
+            )
 
-                # Automatic Paper Stock Deduction & Ledger Recording
+            # Batch Automatic Paper Stock Deduction & Ledger Recording
+            sheets_by_inv = {}
+            for x in items:
                 inv_id = x.get("inventory_id")
                 sheets_used = x.get("paper_sheets", 0)
                 if inv_id and sheets_used > 0:
-                    cur.execute("SELECT available_sheets, item_name FROM inventory WHERE id=%s FOR UPDATE", (inv_id,))
-                    inv_row = cur.fetchone()
-                    if inv_row:
-                        new_avail = max(0, inv_row['available_sheets'] - sheets_used)
-                        cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, inv_id))
-                        cur.execute("""
-                        INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
-                        VALUES (%s, 'SALE', %s, %s, %s, %s, %s)
-                        """, (inv_id, -sheets_used, new_avail, bill_no, f"Billed: {x['service_name']} ({x['sides']})", now_iso))
+                    sheets_by_inv[inv_id] = sheets_by_inv.get(inv_id, 0) + sheets_used
+
+            if sheets_by_inv:
+                inv_ids = list(sheets_by_inv.keys())
+                cur.execute("SELECT id, available_sheets, item_name FROM inventory WHERE id = ANY(%s) FOR UPDATE", (inv_ids,))
+                locked_inv = {r['id']: r for r in cur.fetchall()}
+
+                inv_updates = []
+                movements = []
+                for inv_id, sheets_used in sheets_by_inv.items():
+                    if inv_id in locked_inv:
+                        new_avail = max(0, locked_inv[inv_id]['available_sheets'] - sheets_used)
+                        inv_updates.append((new_avail, now_iso, inv_id))
+                        desc_parts = [f"{x['service_name']} ({x['sides']})" for x in items if x.get("inventory_id") == inv_id]
+                        desc = f"Billed: {', '.join(desc_parts[:3])}" if desc_parts else "Billed items"
+                        movements.append((inv_id, 'SALE', -sheets_used, new_avail, bill_no, desc, now_iso))
+
+                if inv_updates:
+                    psycopg2.extras.execute_batch(
+                        cur,
+                        "UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s",
+                        inv_updates
+                    )
+                if movements:
+                    psycopg2.extras.execute_values(
+                        cur,
+                        """INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at)
+                           VALUES %s""",
+                        movements
+                    )
 
         conn.commit()
 
@@ -2118,15 +2233,7 @@ def receipt(bill_id):
 @app.route("/api/services", methods=["GET"])
 @token_required
 def api_get_services():
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT id, name, rate, double_rate, extra_copy_rate, print_type, paper_size, sheets_per_unit, paper_id
-            FROM services
-            WHERE active = 1
-            ORDER BY print_type, name
-            """)
-            services = cur.fetchall()
+    services = get_cached_services()["active_list"]
     return jsonify({"success": True, "services": services})
 
 # ── API: High-Speed Billing Endpoint (Instant Save & Print / Mobile App) ──
@@ -2188,6 +2295,7 @@ def create_bill_api():
         items = []
         subtotal = 0.0
         total_bill_paper_cost = 0.0
+        cached_services = get_cached_services()
 
         with db() as conn:
             with conn.cursor() as cur:
@@ -2222,16 +2330,15 @@ def create_bill_api():
                     service = None
                     if s_id and s_id != 'custom':
                         try:
-                            cur.execute("SELECT * FROM services WHERE id=%s", (int(s_id),))
-                            service = cur.fetchone()
+                            service = cached_services['by_id'].get(int(s_id))
                         except (ValueError, TypeError):
                             pass
 
                     if not service:
                         s_raw_name = (it.get("service_name") or it.get("name") or "").strip()
                         if s_raw_name:
-                            cur.execute("SELECT * FROM services WHERE LOWER(TRIM(REPLACE(name, '—', '-'))) = LOWER(TRIM(REPLACE(%s, '—', '-')))", (s_raw_name,))
-                            service = cur.fetchone()
+                            clean_s_name = s_raw_name.lower().replace('—', '-')
+                            service = cached_services['by_name'].get(clean_s_name)
 
                     if service:
                         s_name = service["name"]
@@ -2355,22 +2462,28 @@ def create_bill_api():
                 bill_profit = money(total - total_bill_paper_cost)
 
                 now_iso = to_utc_iso()
-                bill_no = "IR" + get_ist_now().strftime("%y%m%d%H%M%S")
+                ist_now = get_ist_now()
+                bill_no = "IR" + ist_now.strftime("%y%m%d%H%M%S")
 
-                original = bill_no
-                suffix = 1
-                cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
-                while cur.fetchone():
-                    bill_no = f"{original}{suffix}"
-                    suffix += 1
-                    cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
-
-                cur.execute(
-                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes, biller_name, original_created_at, client_tx_id)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes, user_name, now_iso, client_tx_id or None)
-                )
-                bill_id = cur.fetchone()["id"]
+                # Insert bill with atomic savepoint to guarantee uniqueness with zero pre-query latency
+                cur.execute("SAVEPOINT sp_bill_insert")
+                try:
+                    cur.execute(
+                        """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes, biller_name, original_created_at, client_tx_id)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes, user_name, now_iso, client_tx_id or None)
+                    )
+                    bill_id = cur.fetchone()["id"]
+                    cur.execute("RELEASE SAVEPOINT sp_bill_insert")
+                except psycopg2.IntegrityError:
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_bill_insert")
+                    bill_no = f"IR{ist_now.strftime('%y%m%d%H%M%S')}{ist_now.microsecond // 1000:03d}"
+                    cur.execute(
+                        """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes, biller_name, original_created_at, client_tx_id)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes, user_name, now_iso, client_tx_id or None)
+                    )
+                    bill_id = cur.fetchone()["id"]
 
                 # Record initial payment in bill_payments if paid > 0
                 if paid > 0:
@@ -2379,26 +2492,55 @@ def create_bill_api():
                         VALUES(%s, %s, %s, %s, 'Initial bill payment', %s)
                     """, (bill_id, paid, payment, user_name, now_iso))
 
-                for x in items:
-                    cur.execute(
-                        """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit, inventory_id)
-                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                        (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
-                         x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"], x["inventory_id"])
-                    )
+                # High-speed batch insert of bill items (1 execute_values call)
+                item_tuples = [
+                    (bill_id, x["service_name"], x["print_type"], x["paper_size"], x["quantity"], x["pages_per_copy"],
+                     x["sides"], x["rate"], x["line_total"], x["paper_sheets"], x["color_units"], x["paper_cost"], x["profit"], x["inventory_id"])
+                    for x in items
+                ]
+                psycopg2.extras.execute_values(
+                    cur,
+                    """INSERT INTO bill_items(bill_id, service_name, print_type, paper_size, quantity, pages_per_copy, sides, rate, line_total, paper_sheets, color_units, paper_cost, profit, inventory_id)
+                       VALUES %s""",
+                    item_tuples
+                )
 
+                # High-speed batch inventory deduction & stock movements
+                sheets_by_inv = {}
+                for x in items:
                     inv_id = x.get("inventory_id")
                     sheets_used = x.get("paper_sheets", 0)
                     if inv_id and sheets_used > 0:
-                        cur.execute("SELECT available_sheets FROM inventory WHERE id=%s FOR UPDATE", (inv_id,))
-                        inv_row = cur.fetchone()
-                        if inv_row:
-                            new_avail = max(0, inv_row['available_sheets'] - sheets_used)
-                            cur.execute("UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s", (new_avail, now_iso, inv_id))
-                            cur.execute("""
-                            INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at, recorded_by)
-                            VALUES (%s, 'SALE', %s, %s, %s, %s, %s, %s)
-                            """, (inv_id, -sheets_used, new_avail, bill_no, f"Billed: {x['service_name']} ({x['sides']})", now_iso, user_name))
+                        sheets_by_inv[inv_id] = sheets_by_inv.get(inv_id, 0) + sheets_used
+
+                if sheets_by_inv:
+                    inv_ids = list(sheets_by_inv.keys())
+                    cur.execute("SELECT id, available_sheets FROM inventory WHERE id = ANY(%s) FOR UPDATE", (inv_ids,))
+                    locked_inv = {r['id']: r['available_sheets'] for r in cur.fetchall()}
+
+                    inv_updates = []
+                    movements_to_insert = []
+                    for inv_id, sheets_used in sheets_by_inv.items():
+                        if inv_id in locked_inv:
+                            new_avail = max(0, locked_inv[inv_id] - sheets_used)
+                            inv_updates.append((new_avail, now_iso, inv_id))
+                            desc_parts = [f"{x['service_name']} ({x['sides']})" for x in items if x.get("inventory_id") == inv_id]
+                            desc = f"Billed: {', '.join(desc_parts[:3])}" if desc_parts else "Billed items"
+                            movements_to_insert.append((inv_id, 'SALE', -sheets_used, new_avail, bill_no, desc, now_iso, user_name))
+
+                    if inv_updates:
+                        psycopg2.extras.execute_batch(
+                            cur,
+                            "UPDATE inventory SET available_sheets=%s, updated_at=%s WHERE id=%s",
+                            inv_updates
+                        )
+                    if movements_to_insert:
+                        psycopg2.extras.execute_values(
+                            cur,
+                            """INSERT INTO stock_movements (item_id, movement_type, quantity, balance_after, reference_id, notes, created_at, recorded_by)
+                               VALUES %s""",
+                            movements_to_insert
+                        )
 
                 # PC Wi-Fi Print queueing if save_and_print
                 print_job_info = None
@@ -2424,7 +2566,7 @@ def create_bill_api():
                         "balance": balance
                     }
                     receipt_text = format_thermal_receipt(bill_dict, items, thermal_width=thermal_width, cashier=user_name)
-                    job_id = f"PJ{get_ist_now().strftime('%y%m%d%H%M%S')}_{bill_id}"
+                    job_id = f"PJ{ist_now.strftime('%y%m%d%H%M%S')}_{bill_id}"
                     
                     cur.execute("""
                     INSERT INTO print_jobs (job_id, bill_id, bill_no, status, printer_name, thermal_width, receipt_text, printed_by, created_at, updated_at)
@@ -2438,15 +2580,16 @@ def create_bill_api():
                         "attempts": 0
                     }
 
-                # Query updated today dashboard figures directly on the same connection
+                # Query updated today dashboard figures using index range scan on the same connection
                 today_str = get_ist_today_str()
+                start_utc_iso, end_utc_iso = ist_dates_to_utc_range(today_str, today_str)
                 cur.execute("""
                     SELECT COALESCE(SUM(total), 0) AS today_total,
                            COUNT(*) AS today_count
                     FROM bills 
-                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') = %s 
+                    WHERE created_at >= %s AND created_at < %s 
                       AND is_deleted = 0
-                """, (today_str,))
+                """, (start_utc_iso, end_utc_iso))
                 dash_row = cur.fetchone()
                 today_count = int(dash_row["today_count"] if dash_row else 1)
                 today_total = float(dash_row["today_total"] if dash_row else total)
@@ -3026,15 +3169,16 @@ def history():
             elif status_filter == "Partially Paid":
                 query += " AND payment_status = 'Partially Paid'"
 
-            if start_d and end_d:
-                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
-                params.extend([start_d, end_d])
-            elif start_d:
-                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s"
-                params.append(start_d)
-            elif end_d:
-                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
-                params.append(end_d)
+            start_utc_iso, end_utc_iso = ist_dates_to_utc_range(start_d, end_d)
+            if start_utc_iso and end_utc_iso:
+                query += " AND created_at >= %s AND created_at < %s"
+                params.extend([start_utc_iso, end_utc_iso])
+            elif start_utc_iso:
+                query += " AND created_at >= %s"
+                params.append(start_utc_iso)
+            elif end_utc_iso:
+                query += " AND created_at < %s"
+                params.append(end_utc_iso)
 
             # Period stats for the filtered period & search
             cur.execute(f"""
@@ -4493,6 +4637,7 @@ def parse_report_period(args):
 def reports():
     period, start_date, end_date, selected_date, selected_month, nav_info, header_title = parse_report_period(request.args)
     is_admin = bool(session.get("is_admin"))
+    start_utc_iso, end_utc_iso = ist_dates_to_utc_range(start_date, end_date)
 
     with db() as conn:
         with conn.cursor() as cur:
@@ -4507,9 +4652,9 @@ def reports():
                        COALESCE(SUM(paper_cost),0) AS paper_cost,
                        COALESCE(SUM(profit),0) AS profit
                 FROM bills 
-                WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE created_at >= %s AND created_at < %s 
                   AND is_deleted=0
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             summary = cur.fetchone()
 
             # Physical Paper sheets & units usage
@@ -4520,9 +4665,9 @@ def reports():
                        COALESCE(SUM(CASE WHEN i.print_type NOT IN ('bw', 'color', 'photo') THEN i.quantity ELSE 0 END),0) AS other_units,
                        COALESCE(SUM(i.paper_cost),0) AS paper_cost
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE b.created_at >= %s AND b.created_at < %s 
                   AND b.is_deleted=0
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             usage = cur.fetchone()
 
             # Payment Methods Breakdown from bill_payments
@@ -4531,11 +4676,11 @@ def reports():
                        COALESCE(SUM(bp.amount),0) AS paid
                 FROM bill_payments bp 
                 JOIN bills b ON b.id=bp.bill_id
-                WHERE to_char(bp.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE bp.created_at >= %s AND bp.created_at < %s 
                   AND b.is_deleted=0 
                 GROUP BY bp.payment_method
                 ORDER BY amount DESC
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             payment_rows = cur.fetchall()
             if not payment_rows:
                 # Fallback to bills table
@@ -4543,11 +4688,11 @@ def reports():
                     SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount,
                            COALESCE(SUM(paid),0) AS paid
                     FROM bills 
-                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                    WHERE created_at >= %s AND created_at < %s 
                       AND is_deleted=0 
                     GROUP BY payment_method
                     ORDER BY amount DESC
-                """, (start_date, end_date))
+                """, (start_utc_iso, end_utc_iso))
                 payment_rows = cur.fetchall()
 
             # Maintenance expenses for period
@@ -4572,10 +4717,10 @@ def reports():
                        SUM(i.paper_cost) AS paper_cost,
                        SUM(i.profit) AS profit
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE b.created_at >= %s AND b.created_at < %s 
                   AND b.is_deleted=0
                 GROUP BY i.service_name, i.print_type ORDER BY amount DESC
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             top_items = cur.fetchall()
 
             # Daily Breakdown Table (for Weekly, Monthly, Custom Range)
@@ -4593,7 +4738,7 @@ def reports():
                             COALESCE(SUM(paper_cost), 0) AS paper_cost,
                             COALESCE(SUM(profit), 0) AS gross_profit
                         FROM bills
-                        WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                        WHERE created_at >= %s AND created_at < %s
                           AND is_deleted = 0
                         GROUP BY 1
                     ),
@@ -4603,7 +4748,7 @@ def reports():
                             COALESCE(SUM(i.paper_sheets), 0) AS paper_sheets
                         FROM bill_items i
                         JOIN bills b ON b.id = i.bill_id
-                        WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                        WHERE b.created_at >= %s AND b.created_at < %s
                           AND b.is_deleted = 0
                         GROUP BY 1
                     ),
@@ -4631,7 +4776,7 @@ def reports():
                     LEFT JOIN daily_maint dm ON dm.day_str = to_char(d.dt, 'YYYY-MM-DD')
                     {active_filter}
                     ORDER BY d.dt DESC
-                """, (start_date, end_date, start_date, end_date, start_date, end_date, start_date, end_date))
+                """, (start_utc_iso, end_utc_iso, start_utc_iso, end_utc_iso, start_date, end_date, start_date, end_date))
                 daily_breakdown = cur.fetchall()
 
     return render_template(
@@ -4661,6 +4806,7 @@ def reports():
 def export_reports_csv():
     period, start_date, end_date, selected_date, selected_month, nav_info, header_title = parse_report_period(request.args)
     is_admin = bool(session.get("is_admin"))
+    start_utc_iso, end_utc_iso = ist_dates_to_utc_range(start_date, end_date)
 
     with db() as conn:
         with conn.cursor() as cur:
@@ -4675,9 +4821,9 @@ def export_reports_csv():
                        COALESCE(SUM(paper_cost),0) AS paper_cost,
                        COALESCE(SUM(profit),0) AS profit
                 FROM bills 
-                WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE created_at >= %s AND created_at < %s 
                   AND is_deleted=0
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             summary = cur.fetchone()
 
             # Paper usage
@@ -4688,9 +4834,9 @@ def export_reports_csv():
                        COALESCE(SUM(CASE WHEN i.print_type NOT IN ('bw', 'color', 'photo') THEN i.quantity ELSE 0 END),0) AS other_units,
                        COALESCE(SUM(i.paper_cost),0) AS paper_cost
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE b.created_at >= %s AND b.created_at < %s 
                   AND b.is_deleted=0
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             usage = cur.fetchone()
 
             # Payments
@@ -4698,21 +4844,21 @@ def export_reports_csv():
                 SELECT bp.payment_method, COUNT(*) AS count, COALESCE(SUM(bp.amount),0) AS amount
                 FROM bill_payments bp 
                 JOIN bills b ON b.id=bp.bill_id
-                WHERE to_char(bp.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE bp.created_at >= %s AND bp.created_at < %s 
                   AND b.is_deleted=0 
                 GROUP BY bp.payment_method
                 ORDER BY amount DESC
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             payment_rows = cur.fetchall()
             if not payment_rows:
                 cur.execute("""
                     SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount
                     FROM bills 
-                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                    WHERE created_at >= %s AND created_at < %s 
                       AND is_deleted=0 
                     GROUP BY payment_method
                     ORDER BY amount DESC
-                """, (start_date, end_date))
+                """, (start_utc_iso, end_utc_iso))
                 payment_rows = cur.fetchall()
 
             # Maintenance
@@ -4737,7 +4883,7 @@ def export_reports_csv():
                         COALESCE(SUM(paper_cost), 0) AS paper_cost,
                         COALESCE(SUM(profit), 0) AS gross_profit
                     FROM bills
-                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                    WHERE created_at >= %s AND created_at < %s
                       AND is_deleted = 0
                     GROUP BY 1
                 ),
@@ -4747,7 +4893,7 @@ def export_reports_csv():
                         COALESCE(SUM(i.paper_sheets), 0) AS paper_sheets
                     FROM bill_items i
                     JOIN bills b ON b.id = i.bill_id
-                    WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                    WHERE b.created_at >= %s AND b.created_at < %s
                       AND b.is_deleted = 0
                     GROUP BY 1
                 ),
@@ -4774,7 +4920,7 @@ def export_reports_csv():
                 LEFT JOIN daily_items di ON di.day_str = to_char(d.dt, 'YYYY-MM-DD')
                 LEFT JOIN daily_maint dm ON dm.day_str = to_char(d.dt, 'YYYY-MM-DD')
                 ORDER BY d.dt DESC
-            """, (start_date, end_date, start_date, end_date, start_date, end_date, start_date, end_date))
+            """, (start_utc_iso, end_utc_iso, start_utc_iso, end_utc_iso, start_date, end_date, start_date, end_date))
             daily_breakdown = cur.fetchall()
 
             # Service Performance
@@ -4786,10 +4932,10 @@ def export_reports_csv():
                        SUM(i.paper_cost) AS paper_cost,
                        SUM(i.profit) AS profit
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                WHERE b.created_at >= %s AND b.created_at < %s 
                   AND b.is_deleted=0
                 GROUP BY i.service_name, i.print_type ORDER BY amount DESC
-            """, (start_date, end_date))
+            """, (start_utc_iso, end_utc_iso))
             top_items = cur.fetchall()
 
     # Build CSV in memory
@@ -4968,6 +5114,7 @@ def services():
                     conn.commit()
                     flash("Service visibility updated.", "success")
 
+                invalidate_services_cache()
                 return redirect(url_for("services"))
 
             # Active items for services page
@@ -5010,15 +5157,16 @@ def export_csv():
             if status_filter in ("Paid", "Unpaid", "Partially Paid"):
                 query += " AND payment_status = %s"
                 params.append(status_filter)
-            if start_d and end_d:
-                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
-                params.extend([start_d, end_d])
-            elif start_d:
-                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s"
-                params.append(start_d)
-            elif end_d:
-                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
-                params.append(end_d)
+            start_utc_iso, end_utc_iso = ist_dates_to_utc_range(start_d, end_d)
+            if start_utc_iso and end_utc_iso:
+                query += " AND created_at >= %s AND created_at < %s"
+                params.extend([start_utc_iso, end_utc_iso])
+            elif start_utc_iso:
+                query += " AND created_at >= %s"
+                params.append(start_utc_iso)
+            elif end_utc_iso:
+                query += " AND created_at < %s"
+                params.append(end_utc_iso)
             query += " ORDER BY id DESC"
             cur.execute(query, tuple(params))
             rows = cur.fetchall()

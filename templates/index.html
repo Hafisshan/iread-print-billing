@@ -772,7 +772,9 @@ async function handleBillingAction(shouldPrint) {
     }
   }
 
+  const client_tx_id = 'tx_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
   const payload = {
+    client_tx_id: client_tx_id,
     customer: document.getElementById('pmCustomer').value.trim(),
     payment_method: document.getElementById('pmMethod').value,
     discount: discount,

@@ -56,6 +56,31 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('{{ url_for("static", filename="sw.js") }}').catch(() => {});
   });
 }
+
+// High-performance Instant Navigation Prefetch
+(function() {
+  const prefetched = new Set();
+  function prefetch(url) {
+    if (!url || prefetched.has(url) || url.startsWith('javascript:') || url.includes('/logout') || url.includes('#')) return;
+    prefetched.add(url);
+    const link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.href = url;
+    document.head.appendChild(link);
+  }
+  document.addEventListener('mouseover', function(e) {
+    const a = e.target.closest('nav a, .topbar a');
+    if (a && a.href && a.origin === window.location.origin) {
+      prefetch(a.href);
+    }
+  }, { passive: true });
+  document.addEventListener('touchstart', function(e) {
+    const a = e.target.closest('nav a, .topbar a');
+    if (a && a.href && a.origin === window.location.origin) {
+      prefetch(a.href);
+    }
+  }, { passive: true });
+})();
 </script>
 </body>
 </html>
