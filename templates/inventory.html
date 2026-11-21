@@ -420,8 +420,8 @@
         {% for m in movements %}
         <tr>
           <td style="font-size: 11px; white-space: nowrap;">
-            {{ m.movement_date or m.created_at[:10] }}<br>
-            <span class="muted">{{ m.created_at[11:19] }}</span>
+            {{ m.created_at | ist_date }}<br>
+            <span class="muted">{{ (m.created_at | ist_datetime)[11:19] }}</span>
           </td>
           <td><strong>{{ m.item_name }}</strong></td>
           <td>

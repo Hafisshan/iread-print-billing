@@ -19,11 +19,11 @@
   <div class="center small" style="letter-spacing:1px; margin: 4px 0 8px;">BILL / PAYMENT RECEIPT</div>
   <div class="receipt-meta">
     <div><span>Bill No.</span><strong>{{ bill.bill_no }}</strong></div>
-    <div><span>Date</span><strong>{{ bill.created_at[:19].replace('T',' ') }}</strong></div>
+    <div><span>Date</span><strong>{{ bill.created_at | ist_datetime }}</strong></div>
   </div>
   {% if bill.original_created_at and bill.original_created_at != bill.created_at %}
   <div class="small muted" style="font-size:11px; margin:-4px 0 6px; text-align:right;">
-    Original Entry: <strong>{{ bill.original_created_at[:19].replace('T',' ') }}</strong> (Corrected)
+    Original Entry: <strong>{{ bill.original_created_at | ist_datetime }}</strong> (Corrected)
   </div>
   {% endif %}
   {% if bill.biller_name %}

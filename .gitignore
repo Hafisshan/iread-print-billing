@@ -11,6 +11,8 @@ __pycache__/
 
 # Database file
 *.db
+backup_*.json
+*.log
 
 # Environment / secrets
 .env

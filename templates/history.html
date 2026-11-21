@@ -115,7 +115,7 @@
       {% for b in bills %}
       <tr id="bill-row-{{ b.id }}">
         <td><strong>{{ b.bill_no }}</strong></td>
-        <td>{{ b.created_at[:19].replace('T',' ') }}</td>
+        <td>{{ b.created_at | ist_datetime }}</td>
         <td>{{ b.customer or 'Walk-in' }}</td>
         <td>{{ b.payment_method }}</td>
         <td><strong>{{ b.total|inr }}</strong></td>

@@ -155,7 +155,7 @@
             {% endif %}
           </td>
           <td>{{ j.printed_by or 'Staff' }}</td>
-          <td style="font-size: 12px; color: var(--muted);">{{ j.created_at[:19].replace('T', ' ') }}</td>
+          <td style="font-size: 12px; color: var(--muted);">{{ j.created_at | ist_datetime }}</td>
           <td>{{ j.attempts }}</td>
           <td>
             {% if j.status != 'Printed' %}

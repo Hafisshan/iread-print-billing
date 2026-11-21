@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Daily Reports & Financials | Iread{% endblock %}
+{% block title %}{{ header_title }} | Iread Reports{% endblock %}
 {% block content %}
 <div class="pagehead">
   <div>
-    <p class="eyebrow">FINANCIAL PERFORMANCE</p>
-    <h1>Shop Reports &amp; Analytics</h1>
-    <p class="muted">Track daily sales, paper costs, operating expenses, and net profit.</p>
+    <p class="eyebrow">FINANCIAL PERFORMANCE &amp; ANALYTICS</p>
+    <h1>{{ header_title }}</h1>
+    <p class="muted">Track sales, collections, paper costs, operating expenses, and net profit across reporting periods.</p>
   </div>
   {% if is_admin %}
   <div class="stats">
@@ -16,15 +16,87 @@
   {% endif %}
 </div>
 
-<!-- ── Date Filter & Quick Range ── -->
+<!-- ── Period Navigation Tabs & CSV Export ── -->
+<div class="period-tabs" style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <a href="{{ url_for('reports', period='daily', date=selected_date) }}" class="cat-tab {% if period == 'daily' %}active{% endif %}" style="text-decoration: none;">📅 Daily</a>
+    <a href="{{ url_for('reports', period='weekly', date=selected_date) }}" class="cat-tab {% if period == 'weekly' %}active{% endif %}" style="text-decoration: none;">🗓️ Weekly</a>
+    <a href="{{ url_for('reports', period='monthly', month=selected_month) }}" class="cat-tab {% if period == 'monthly' %}active{% endif %}" style="text-decoration: none;">📊 Monthly</a>
+    <a href="{{ url_for('reports', period='custom', start_date=start_date, end_date=end_date) }}" class="cat-tab {% if period == 'custom' %}active{% endif %}" style="text-decoration: none;">🔍 Custom Range</a>
+  </div>
+  <a href="{{ url_for('export_reports_csv', period=period, date=selected_date, month=selected_month, start_date=start_date, end_date=end_date) }}" class="btn secondary" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; font-size: 13px; font-weight: 700;">
+    📥 Export CSV
+  </a>
+</div>
+
+<!-- ── Date Filter & Quick Range Bar ── -->
 <div class="panel" style="padding: 16px 20px; margin-bottom: 20px;">
-  <form class="searchbar" method="get" style="margin-bottom: 0; align-items: flex-end;">
-    <label>
-      Select Date
-      <input type="date" name="date" value="{{ selected_date }}">
-    </label>
-    <button class="btn primary">View Day Report</button>
+  {% if period == 'daily' %}
+  <form class="searchbar" method="get" style="margin-bottom: 0; align-items: flex-end; display: flex; gap: 12px; flex-wrap: wrap;">
+    <input type="hidden" name="period" value="daily">
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <a href="{{ nav_info.prev_url }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;" title="Previous Day">◀ Prev Day</a>
+      <label style="margin: 0;">
+        Select Date
+        <input type="date" name="date" value="{{ selected_date }}" onchange="this.form.submit()">
+      </label>
+      <a href="{{ nav_info.next_url }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;" title="Next Day">Next Day ▶</a>
+    </div>
+    {% if not nav_info.is_current %}
+    <a href="{{ url_for('reports', period='daily', date=today) }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;">Jump to Today</a>
+    {% endif %}
+    <span class="muted" style="margin-left: auto; font-weight: 600;">Range: {{ start_date }}</span>
   </form>
+
+  {% elif period == 'weekly' %}
+  <form class="searchbar" method="get" style="margin-bottom: 0; align-items: flex-end; display: flex; gap: 12px; flex-wrap: wrap;">
+    <input type="hidden" name="period" value="weekly">
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <a href="{{ nav_info.prev_url }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;" title="Previous Week">◀ Prev Week</a>
+      <label style="margin: 0;">
+        Pick Any Date in Week
+        <input type="date" name="date" value="{{ selected_date }}" onchange="this.form.submit()">
+      </label>
+      <a href="{{ nav_info.next_url }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;" title="Next Week">Next Week ▶</a>
+    </div>
+    {% if not nav_info.is_current %}
+    <a href="{{ url_for('reports', period='weekly', date=today) }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;">Current Week</a>
+    {% endif %}
+    <span class="muted" style="margin-left: auto; font-weight: 600;">{{ start_date }} to {{ end_date }}</span>
+  </form>
+
+  {% elif period == 'monthly' %}
+  <form class="searchbar" method="get" style="margin-bottom: 0; align-items: flex-end; display: flex; gap: 12px; flex-wrap: wrap;">
+    <input type="hidden" name="period" value="monthly">
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <a href="{{ nav_info.prev_url }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;" title="Previous Month">◀ Prev Month</a>
+      <label style="margin: 0;">
+        Select Month
+        <input type="month" name="month" value="{{ selected_month }}" onchange="this.form.submit()">
+      </label>
+      <a href="{{ nav_info.next_url }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;" title="Next Month">Next Month ▶</a>
+    </div>
+    {% if not nav_info.is_current %}
+    <a href="{{ url_for('reports', period='monthly') }}" class="btn secondary" style="padding: 6px 12px; font-size: 13px;">Current Month</a>
+    {% endif %}
+    <span class="muted" style="margin-left: auto; font-weight: 600;">{{ start_date }} to {{ end_date }}</span>
+  </form>
+
+  {% elif period == 'custom' %}
+  <form class="searchbar" method="get" style="margin-bottom: 0; align-items: flex-end; display: flex; gap: 12px; flex-wrap: wrap;">
+    <input type="hidden" name="period" value="custom">
+    <label style="margin: 0;">
+      From Date
+      <input type="date" name="start_date" value="{{ start_date }}" required>
+    </label>
+    <label style="margin: 0;">
+      To Date
+      <input type="date" name="end_date" value="{{ end_date }}" required>
+    </label>
+    <button class="btn primary" style="padding: 8px 16px;">Apply Range</button>
+    <span class="muted" style="margin-left: auto; font-weight: 600;">{{ start_date }} to {{ end_date }}</span>
+  </form>
+  {% endif %}
 </div>
 
 <!-- ── Main Financial Metric Cards (Admin sees Profit & Costs) ── -->
@@ -60,21 +132,79 @@
     <strong style="color: #9a214b;">{{ maintenance_total|inr }}</strong>
   </div>
   <div class="metric" style="border-top: 3px solid var(--accent); background: #fdf6f8;">
-    <span>Net Profit (Today)</span>
+    <span>Net Profit ({{ period|capitalize }})</span>
     <strong style="color: var(--accent); font-size: 22px;">{{ net_profit|inr }}</strong>
   </div>
   {% endif %}
 </div>
 
+<!-- ── Daily Breakdown Table (for Weekly, Monthly, and Custom Range) ── -->
+{% if period in ['weekly', 'monthly', 'custom'] %}
+<section class="panel" style="margin-bottom: 20px;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+    <div>
+      <h2 style="margin: 0;">Daily Breakdown ({{ header_title }})</h2>
+      <p class="muted" style="font-size: 12px; margin: 2px 0 0;">Day-by-day activity and financials for the selected period.</p>
+    </div>
+    <span class="tile-badge service">{{ daily_breakdown|length }} Days</span>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Day</th>
+          <th style="text-align: right;">Bills</th>
+          <th style="text-align: right;">Gross Sales</th>
+          <th style="text-align: right;">Collected</th>
+          <th style="text-align: right;">Paper Sheets</th>
+          {% if is_admin %}
+          <th style="text-align: right;">Maintenance</th>
+          <th style="text-align: right;">Net Profit</th>
+          {% endif %}
+          <th style="text-align: center;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in daily_breakdown %}
+        <tr>
+          <td><strong>{{ d.date_formatted }}</strong></td>
+          <td><span class="muted">{{ d.day_name }}</span></td>
+          <td style="text-align: right; font-weight: 600;">{{ d.bills_count }}</td>
+          <td style="text-align: right; font-weight: 700;">{{ d.gross_sales|inr }}</td>
+          <td style="text-align: right; color: var(--green); font-weight: 700;">{{ d.collected|inr }}</td>
+          <td style="text-align: right;">{{ d.paper_sheets }} sheets</td>
+          {% if is_admin %}
+          <td style="text-align: right; color: #9a214b;">{{ d.maint_amount|inr }}</td>
+          <td style="text-align: right; color: var(--accent); font-weight: 700;">{{ d.net_profit|inr }}</td>
+          {% endif %}
+          <td style="text-align: center;">
+            <a href="{{ url_for('reports', period='daily', date=d.date_str) }}" class="btn secondary" style="padding: 3px 8px; font-size: 11px;">View Day</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="{% if is_admin %}9{% else %}7{% endif %}" class="muted" style="text-align: center; padding: 20px;">
+            No transactions or expenses recorded in this period.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <!-- ── Usage & Expenses Row ── -->
 <div class="reportgrid">
   <!-- Print Paper Usage -->
   <section class="panel">
-    <h2>Estimated Physical Paper & Print Usage</h2>
+    <h2>Estimated Physical Paper &amp; Print Usage</h2>
     <div class="usage">
       <div><span>Physical Paper Sheets Used</span><strong style="color: var(--accent);">{{ usage.sheets }} sheets</strong></div>
       <div><span>B&amp;W Page Units</span><strong>{{ usage.bw_units }}</strong></div>
       <div><span>Colour / Photo Units</span><strong>{{ usage.color_units }}</strong></div>
+      <div><span>Other Service Units</span><strong>{{ usage.other_units }}</strong></div>
       {% if is_admin %}
       <div><span>Estimated Paper Cost</span><strong>{{ usage.paper_cost|inr }}</strong></div>
       {% endif %}
@@ -89,8 +219,8 @@
       <thead>
         <tr>
           <th>Method</th>
-          <th>Bills</th>
-          <th>Total</th>
+          <th>Transactions</th>
+          <th>Amount</th>
           <th>Received</th>
         </tr>
       </thead>
@@ -103,16 +233,17 @@
           <td style="color: var(--green); font-weight: 600;">{{ p.paid|inr }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="4" class="muted">No transactions on this date.</td></tr>
+        <tr><td colspan="4" class="muted">No transactions in this period.</td></tr>
         {% endfor %}
       </tbody>
     </table>
 
     {% if is_admin and maintenance_rows %}
-    <h3 style="margin: 20px 0 10px; font-size: 14px;">Daily Maintenance Expenses</h3>
+    <h3 style="margin: 20px 0 10px; font-size: 14px;">Maintenance &amp; Operating Expenses</h3>
     <table>
       <thead>
         <tr>
+          <th>Date</th>
           <th>Category</th>
           <th>Description</th>
           <th style="text-align: right;">Amount</th>
@@ -121,6 +252,7 @@
       <tbody>
         {% for m in maintenance_rows %}
         <tr>
+          <td>{{ m.expense_date }}</td>
           <td><span class="tile-badge service">{{ m.category }}</span></td>
           <td>{{ m.title }}</td>
           <td style="text-align: right; color: #9a214b; font-weight: 700;">{{ m.amount|inr }}</td>
@@ -172,7 +304,7 @@
           {% endif %}
         </tr>
         {% else %}
-        <tr><td colspan="{% if is_admin %}8{% else %}5{% endif %}" class="muted" style="text-align:center; padding:24px;">No services billed for this date.</td></tr>
+        <tr><td colspan="{% if is_admin %}8{% else %}5{% endif %}" class="muted" style="text-align:center; padding:24px;">No services billed for this period.</td></tr>
         {% endfor %}
       </tbody>
     </table>

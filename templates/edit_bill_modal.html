@@ -227,11 +227,11 @@ async function openEditBillModal(billId) {
     document.getElementById('editBillId').value = editCurrentBill.id;
     document.getElementById('editBillNo').textContent = editCurrentBill.bill_no;
     
-    const origDt = editCurrentBill.original_created_at || editCurrentBill.created_at;
+    const origDt = editCurrentBill.original_created_at_ist || editCurrentBill.created_at_ist || editCurrentBill.original_created_at || editCurrentBill.created_at || '';
     document.getElementById('editOrigDateDisplay').textContent = origDt.slice(0, 19).replace('T', ' ');
 
-    // Format datetime-local string (YYYY-MM-DDTHH:MM)
-    let dtVal = editCurrentBill.created_at || '';
+    // Format datetime-local string (YYYY-MM-DDTHH:MM in IST)
+    let dtVal = editCurrentBill.created_at_ist || editCurrentBill.created_at || '';
     if (dtVal.length >= 16) {
       dtVal = dtVal.slice(0, 16);
     }

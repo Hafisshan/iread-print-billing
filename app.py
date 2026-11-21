@@ -1,14 +1,19 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, make_response, session, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, make_response, session, jsonify, Response
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
+import calendar
+import csv
+import io
+import zoneinfo
 import os
 import json
 import hmac
 import hashlib
 import base64
 import time
+import threading
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
@@ -65,8 +70,53 @@ DEFAULT_SERVICES = [
     ('Polaroids — 12x18 printing', 25.00, None, 'photo', '12x18', 1),
 ]
 
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
+
+# ── Thread-Safe Connection Pool for High Performance ──
+_DB_POOL = None
+_POOL_LOCK = threading.Lock()
+
+def get_db_pool():
+    global _DB_POOL
+    if _DB_POOL is None:
+        with _POOL_LOCK:
+            if _DB_POOL is None:
+                _DB_POOL = ThreadedConnectionPool(
+                    minconn=2,
+                    maxconn=20,
+                    dsn=DATABASE_URL,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5
+                )
+    return _DB_POOL
+
+@contextmanager
 def db():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    """
+    Thread-safe connection pool context manager.
+    Eliminates remote TCP+TLS handshake latency across all routes.
+    """
+    pool = get_db_pool()
+    conn = pool.getconn()
+    try:
+        if conn.closed:
+            conn = pool.getconn()
+        yield conn
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            pool.putconn(conn)
+        except Exception:
+            pass
 
 def init_db():
     if not DATABASE_URL:
@@ -161,6 +211,8 @@ def init_db():
                 ALTER TABLE bills ADD COLUMN IF NOT EXISTS original_created_at TEXT;
                 ALTER TABLE bills ADD COLUMN IF NOT EXISTS biller_name TEXT DEFAULT '';
                 ALTER TABLE bills ADD COLUMN IF NOT EXISTS other_charges REAL DEFAULT 0;
+                ALTER TABLE bills ADD COLUMN IF NOT EXISTS client_tx_id TEXT;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bills_client_tx_id ON bills(client_tx_id) WHERE client_tx_id IS NOT NULL;
                 UPDATE bills SET original_created_at = created_at WHERE original_created_at IS NULL;
                 ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS inventory_id INTEGER REFERENCES inventory(id) ON DELETE SET NULL;
 
@@ -384,6 +436,98 @@ def init_db():
 def money(v):
     return round(float(v or 0), 2)
 
+# ── Indian Standard Time (IST / Asia/Kolkata / UTC+05:30) Helpers ──
+IST_TZ = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+def get_utc_now():
+    """Returns timezone-aware current UTC datetime."""
+    return datetime.now(timezone.utc)
+
+def get_ist_now():
+    """Returns timezone-aware current Asia/Kolkata datetime (UTC+05:30)."""
+    return datetime.now(timezone.utc).astimezone(IST_TZ)
+
+def get_ist_today():
+    """Returns date object for today in Asia/Kolkata."""
+    return get_ist_now().date()
+
+def get_ist_today_str():
+    """Returns current date in Asia/Kolkata as YYYY-MM-DD."""
+    return get_ist_today().strftime("%Y-%m-%d")
+
+def to_utc_iso(dt_input=None):
+    """
+    Returns UTC ISO string (YYYY-MM-DDTHH:MM:SSZ).
+    Normalizes any datetime or ISO string to standard UTC ISO.
+    """
+    if dt_input is None:
+        return get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(dt_input, datetime):
+        if dt_input.tzinfo is None:
+            dt_input = dt_input.replace(tzinfo=timezone.utc)
+        return dt_input.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    s = str(dt_input).strip()
+    if not s:
+        return get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s[:-1]).replace(tzinfo=timezone.utc)
+        elif "+" in s[10:] or ("-" in s[10:] and len(s) > 19):
+            dt = datetime.fromisoformat(s)
+        else:
+            # Historical naive string in DB: recorded in UTC
+            dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        return s
+
+def to_ist_datetime(dt_input):
+    """
+    Converts any timestamp (UTC ISO, naive UTC string, or datetime object) to Asia/Kolkata datetime.
+    Idempotent: will never apply timezone conversion twice!
+    """
+    if not dt_input:
+        return None
+    if isinstance(dt_input, datetime):
+        if dt_input.tzinfo is None:
+            dt_input = dt_input.replace(tzinfo=timezone.utc)
+        return dt_input.astimezone(IST_TZ)
+    s = str(dt_input).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s[:-1]).replace(tzinfo=timezone.utc)
+        elif "+" in s[10:] or ("-" in s[10:] and len(s) > 19):
+            dt = datetime.fromisoformat(s)
+        else:
+            dt = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+        return dt.astimezone(IST_TZ)
+    except Exception:
+        return None
+
+def format_ist_datetime_str(dt_input, fmt="%Y-%m-%d %H:%M:%S"):
+    """Returns formatted Asia/Kolkata date and time string."""
+    dt = to_ist_datetime(dt_input)
+    if not dt:
+        return str(dt_input or '').replace('T', ' ')[:19]
+    return dt.strftime(fmt)
+
+def format_ist_date_str(dt_input):
+    """Returns Asia/Kolkata date string (YYYY-MM-DD)."""
+    dt = to_ist_datetime(dt_input)
+    if not dt:
+        return str(dt_input or '')[:10]
+    return dt.strftime("%Y-%m-%d")
+
+@app.template_filter("ist_datetime")
+def filter_ist_datetime(dt_input, fmt="%Y-%m-%d %H:%M:%S"):
+    return format_ist_datetime_str(dt_input, fmt)
+
+@app.template_filter("ist_date")
+def filter_ist_date(dt_input):
+    return format_ist_date_str(dt_input)
+
 @app.template_filter("inr")
 def inr(value):
     return f"₹{float(value or 0):,.2f}"
@@ -396,6 +540,41 @@ def admin_required(f):
             return redirect(url_for("login", next=request.path))
         return f(*args, **kwargs)
     return decorated_function
+
+# ── Login Rate Limiting & Anti-Brute-Force Protection ──
+_LOGIN_ATTEMPTS = {}
+_LOGIN_LOCK = threading.Lock()
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 300  # 5 minutes sliding window
+
+def get_client_ip():
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "127.0.0.1"
+
+def check_login_rate_limit(key):
+    now = time.time()
+    with _LOGIN_LOCK:
+        attempts = _LOGIN_ATTEMPTS.get(key, [])
+        valid_attempts = [t for t in attempts if now - t < LOGIN_LOCKOUT_SECONDS]
+        _LOGIN_ATTEMPTS[key] = valid_attempts
+        if len(valid_attempts) >= MAX_LOGIN_ATTEMPTS:
+            remaining_seconds = int(LOGIN_LOCKOUT_SECONDS - (now - valid_attempts[0]))
+            return False, max(1, remaining_seconds)
+        return True, 0
+
+def record_login_failure(key):
+    now = time.time()
+    with _LOGIN_LOCK:
+        attempts = _LOGIN_ATTEMPTS.get(key, [])
+        attempts.append(now)
+        _LOGIN_ATTEMPTS[key] = attempts
+
+def clear_login_failures(key):
+    with _LOGIN_LOCK:
+        if key in _LOGIN_ATTEMPTS:
+            del _LOGIN_ATTEMPTS[key]
 
 # ── Token Authentication & Security Helpers ──
 def generate_auth_token(user_id, username, role, name, expires_in=86400 * 30):
@@ -514,11 +693,7 @@ def format_thermal_receipt(bill, items, thermal_width="80mm", shop_name="IREAD S
     
     bill_no = bill.get("bill_no", "")
     created_at = bill.get("created_at", "")
-    try:
-        dt = datetime.fromisoformat(created_at)
-        dt_str = dt.strftime("%d/%m/%Y %I:%M %p")
-    except Exception:
-        dt_str = created_at
+    dt_str = format_ist_datetime_str(created_at, "%d/%m/%Y %I:%M %p")
     
     cust = (bill.get("customer") or "Walk-in Customer").strip()
     pay_method = bill.get("payment_method") or "Cash"
@@ -638,6 +813,19 @@ def logout():
     flash("Logged out successfully.", "success")
     return redirect(url_for("index"))
 
+@app.route("/api/ping", methods=["GET"])
+def api_ping():
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "app": "iread-billing",
+        "name": "Iread Stationery & Print Billing",
+        "version": "2.1.0",
+        "server_time": format_ist_datetime_str(get_utc_now()),
+        "server_time_ist": format_ist_datetime_str(get_utc_now()),
+        "timezone": "Asia/Kolkata (+05:30)"
+    })
+
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
     data = request.get_json(silent=True) or {}
@@ -646,6 +834,16 @@ def api_auth_login():
     
     if not username or not password:
         return jsonify({"success": False, "error": "Username and password required."}), 400
+
+    client_ip = get_client_ip()
+    rate_limit_key = f"{client_ip}:{username.lower()}"
+    allowed, retry_after = check_login_rate_limit(rate_limit_key)
+    if not allowed:
+        return jsonify({
+            "success": False,
+            "error": f"Too many failed login attempts. Please wait {retry_after} seconds before trying again.",
+            "retry_after": retry_after
+        }), 429
         
     with db() as conn:
         with conn.cursor() as cur:
@@ -653,8 +851,10 @@ def api_auth_login():
             user = cur.fetchone()
             
     if not user or not check_password_hash(user["password_hash"], password):
+        record_login_failure(rate_limit_key)
         return jsonify({"success": False, "error": "Invalid username or password."}), 401
         
+    clear_login_failures(rate_limit_key)
     token = generate_auth_token(user["id"], user["username"], user["role"], user["name"])
     return jsonify({
         "success": True,
@@ -1666,14 +1866,15 @@ def maintenance_page():
 
 # ── Dashboard Statistics Helper ──
 def get_today_dashboard_stats():
-    today = date.today().isoformat()
+    today = get_ist_today_str()
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT COALESCE(SUM(total), 0) AS today_total,
                        COUNT(*) AS today_count
                 FROM bills 
-                WHERE substr(created_at, 1, 10) = %s AND is_deleted = 0
+                WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') = %s 
+                  AND is_deleted = 0
             """, (today,))
             row = cur.fetchone()
             t_total = float(row['today_total'] if row else 0.0)
@@ -1841,8 +2042,8 @@ def create_bill():
             # Gross profit for bill = total selling after discount - total paper cost
             bill_profit = money(total - total_bill_paper_cost)
 
-            now_iso = datetime.now().isoformat(timespec="seconds")
-            bill_no = "IR" + datetime.now().strftime("%y%m%d%H%M%S")
+            now_iso = to_utc_iso()
+            bill_no = "IR" + get_ist_now().strftime("%y%m%d%H%M%S")
 
             # Avoid bill_no collisions
             original = bill_no
@@ -1915,6 +2116,7 @@ def receipt(bill_id):
 
 # ── API: Service Catalog Endpoint ──
 @app.route("/api/services", methods=["GET"])
+@token_required
 def api_get_services():
     with db() as conn:
         with conn.cursor() as cur:
@@ -1929,15 +2131,14 @@ def api_get_services():
 
 # ── API: High-Speed Billing Endpoint (Instant Save & Print / Mobile App) ──
 @app.post("/api/create-bill")
+@token_required
 def create_bill_api():
     try:
-        # Check auth token if present
-        auth_header = request.headers.get("Authorization", "")
-        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else request.headers.get("X-Auth-Token", "").strip()
-        user_data = verify_auth_token(token) if token else None
-        user_name = user_data.get("name") if user_data else ("Admin" if session.get("is_admin") else "Staff")
+        user_data = getattr(request, "current_user", {})
+        user_name = user_data.get("name") or ("Admin" if session.get("is_admin") else "Staff")
         
         data = request.get_json(force=True) or {}
+        client_tx_id = (data.get("client_tx_id") or "").strip()
         customer = (data.get("customer") or "Walk-in Customer").strip()
         payment = (data.get("payment_method") or "Cash").strip()
         discount = money(data.get("discount", 0))
@@ -1946,6 +2147,40 @@ def create_bill_api():
         action = (data.get("action") or "save_only").strip().lower()
         notes = (data.get("notes") or "").strip()
         raw_items = data.get("items") or []
+
+        # Idempotency check: if client_tx_id was already processed, return existing bill without duplicate creation
+        if client_tx_id:
+            with db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, bill_no, subtotal, discount, total, paid, balance, payment_status, created_at
+                        FROM bills
+                        WHERE client_tx_id = %s AND is_deleted = 0
+                    """, (client_tx_id,))
+                    existing = cur.fetchone()
+                    if existing:
+                        cur.execute("SELECT job_id, status, thermal_width, attempts FROM print_jobs WHERE bill_id=%s ORDER BY id DESC LIMIT 1", (existing["id"],))
+                        pj = cur.fetchone()
+                        dash_stats = get_today_dashboard_stats()
+                        return jsonify({
+                            "ok": True,
+                            "success": True,
+                            "bill_id": existing["id"],
+                            "bill_no": existing["bill_no"],
+                            "subtotal": existing["subtotal"],
+                            "discount": existing["discount"],
+                            "total": existing["total"],
+                            "paid": existing["paid"],
+                            "balance": existing["balance"],
+                            "payment_status": existing["payment_status"],
+                            "action": action,
+                            "print_job": pj,
+                            "receipt_url": url_for("receipt", bill_id=existing["id"]),
+                            "today_count": dash_stats["today_count"],
+                            "today_total": dash_stats["today_total"],
+                            "today_total_formatted": dash_stats["today_total_formatted"],
+                            "is_duplicate_prevented": True
+                        })
 
         if not raw_items:
             return jsonify({"success": False, "error": "Cart is empty."}), 400
@@ -2018,16 +2253,40 @@ def create_bill_api():
                         sheets = qty * pages_per_copy
 
                     # Line total & rate calculation:
-                    # Configurable tiered pricing (e.g. Print B&W A4: first copy + additional copies)
-                    if service and service.get("extra_copy_rate") is not None and float(service.get("extra_copy_rate") or 0) > 0:
-                        first_copy = float(service["double_rate"] if (is_double and service.get("double_rate") is not None) else service["rate"])
-                        extra_copy = float(service["extra_copy_rate"])
-                        line_total = money(first_copy + max(0, qty - 1) * extra_copy)
-                        rate = money(line_total / qty)
+                    # Supports universal custom rate override for ALL items and categories
+                    is_custom_rate = bool(it.get("is_custom_rate") or it.get("has_custom_rate") or it.get("custom_rate"))
+                    user_rate = it.get("rate")
+                    has_user_rate = (user_rate is not None and str(user_rate).strip() != "")
+
+                    if has_user_rate:
+                        custom_rate_val = money(max(0.0, float(user_rate)))
+                        if is_custom_rate:
+                            rate = custom_rate_val
+                            line_total = money(qty * pages_per_copy * rate)
+                        elif service and service.get("extra_copy_rate") is not None and float(service.get("extra_copy_rate") or 0) > 0:
+                            first_copy = float(service["double_rate"] if (is_double and service.get("double_rate") is not None) else service["rate"])
+                            extra_copy = float(service["extra_copy_rate"])
+                            default_total = money(first_copy + max(0, qty - 1) * extra_copy)
+                            default_rate = money(default_total / qty)
+                            if custom_rate_val != default_rate:
+                                rate = custom_rate_val
+                                line_total = money(qty * pages_per_copy * rate)
+                            else:
+                                line_total = default_total
+                                rate = default_rate
+                        else:
+                            standard_unit = float(service["double_rate"] if (service and is_double and service.get("double_rate") is not None) else (service["rate"] if service else 0.0))
+                            if custom_rate_val != money(standard_unit) or is_custom_rate:
+                                rate = custom_rate_val
+                                line_total = money(qty * pages_per_copy * rate)
+                            else:
+                                rate = money(standard_unit)
+                                line_total = money(qty * pages_per_copy * rate)
                     elif it.get("line_total") is not None and str(it.get("line_total")).strip() != "":
                         line_total = money(it.get("line_total"))
+                        rate = money(line_total / (qty * pages_per_copy)) if (qty * pages_per_copy) > 0 else 0.0
                     else:
-                        unit_rate = float(service["double_rate"] if (service and is_double and service.get("double_rate") is not None) else (service["rate"] if service else rate))
+                        unit_rate = float(service["double_rate"] if (service and is_double and service.get("double_rate") is not None) else (service["rate"] if service else 0.0))
                         line_total = money(qty * pages_per_copy * unit_rate)
                         rate = money(unit_rate)
 
@@ -2095,8 +2354,8 @@ def create_bill_api():
                 total_bill_paper_cost = money(total_bill_paper_cost)
                 bill_profit = money(total - total_bill_paper_cost)
 
-                now_iso = datetime.now().isoformat(timespec="seconds")
-                bill_no = "IR" + datetime.now().strftime("%y%m%d%H%M%S")
+                now_iso = to_utc_iso()
+                bill_no = "IR" + get_ist_now().strftime("%y%m%d%H%M%S")
 
                 original = bill_no
                 suffix = 1
@@ -2107,9 +2366,9 @@ def create_bill_api():
                     cur.execute("SELECT 1 FROM bills WHERE bill_no=%s", (bill_no,))
 
                 cur.execute(
-                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes, biller_name, original_created_at)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes, user_name, now_iso)
+                    """INSERT INTO bills(bill_no, created_at, customer, payment_method, subtotal, discount, total, paid, balance, payment_status, paper_cost, profit, notes, biller_name, original_created_at, client_tx_id)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (bill_no, now_iso, customer, payment, subtotal, discount, total, paid, balance, payment_status, total_bill_paper_cost, bill_profit, notes, user_name, now_iso, client_tx_id or None)
                 )
                 bill_id = cur.fetchone()["id"]
 
@@ -2165,7 +2424,7 @@ def create_bill_api():
                         "balance": balance
                     }
                     receipt_text = format_thermal_receipt(bill_dict, items, thermal_width=thermal_width, cashier=user_name)
-                    job_id = f"PJ{datetime.now().strftime('%y%m%d%H%M%S')}_{bill_id}"
+                    job_id = f"PJ{get_ist_now().strftime('%y%m%d%H%M%S')}_{bill_id}"
                     
                     cur.execute("""
                     INSERT INTO print_jobs (job_id, bill_id, bill_no, status, printer_name, thermal_width, receipt_text, printed_by, created_at, updated_at)
@@ -2179,10 +2438,22 @@ def create_bill_api():
                         "attempts": 0
                     }
 
+                # Query updated today dashboard figures directly on the same connection
+                today_str = get_ist_today_str()
+                cur.execute("""
+                    SELECT COALESCE(SUM(total), 0) AS today_total,
+                           COUNT(*) AS today_count
+                    FROM bills 
+                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') = %s 
+                      AND is_deleted = 0
+                """, (today_str,))
+                dash_row = cur.fetchone()
+                today_count = int(dash_row["today_count"] if dash_row else 1)
+                today_total = float(dash_row["today_total"] if dash_row else total)
+
             conn.commit()
 
         receipt_url = url_for("receipt", bill_id=bill_id)
-        dash_stats = get_today_dashboard_stats()
         return jsonify({
             "ok": True,
             "success": True,
@@ -2197,15 +2468,16 @@ def create_bill_api():
             "action": action,
             "print_job": print_job_info,
             "receipt_url": receipt_url,
-            "today_count": dash_stats["today_count"],
-            "today_total": dash_stats["today_total"],
-            "today_total_formatted": dash_stats["today_total_formatted"]
+            "today_count": today_count,
+            "today_total": today_total,
+            "today_total_formatted": inr(today_total)
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
 # ── API: Print Job Status & Retry ──
 @app.route("/api/print-jobs/<job_id>", methods=["GET"])
+@token_required
 def api_get_print_job(job_id):
     with db() as conn:
         with conn.cursor() as cur:
@@ -2220,6 +2492,7 @@ def api_get_print_job(job_id):
     return jsonify({"success": True, "job": job})
 
 @app.route("/api/print-jobs/<job_id>/retry", methods=["POST"])
+@token_required
 def api_retry_print_job(job_id):
     now = datetime.now().isoformat(timespec="seconds")
     with db() as conn:
@@ -2242,13 +2515,14 @@ def api_retry_print_job(job_id):
 @app.route("/api/staff/sales", methods=["GET"])
 @token_required
 def api_staff_sales():
-    today_str = date.today().isoformat()
+    today_str = get_ist_today_str()
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
             SELECT COUNT(*) AS count, COALESCE(SUM(total), 0) AS total_sales
             FROM bills
-            WHERE is_deleted = 0 AND SUBSTRING(created_at, 1, 10) = %s
+            WHERE is_deleted = 0 
+              AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') = %s
             """, (today_str,))
             row = cur.fetchone()
             today_count = int(row["count"] or 0)
@@ -2260,9 +2534,15 @@ def api_staff_sales():
             FROM bills
             WHERE is_deleted = 0
             ORDER BY id DESC
-            LIMIT 20
+            LIMIT 50
             """)
-            bills = cur.fetchall()
+            raw_bills = cur.fetchall()
+            bills = []
+            for b in raw_bills:
+                b_dict = dict(b)
+                b_dict["created_at_utc"] = b_dict.get("created_at")
+                b_dict["created_at"] = format_ist_datetime_str(b_dict.get("created_at"))
+                bills.append(b_dict)
 
     return jsonify({
         "success": True,
@@ -2304,6 +2584,46 @@ def api_staff_stock():
                 })
 
     return jsonify({"success": True, "items": items})
+
+# ── API: Staff Stock Addition (Staff & Admin) ──
+@app.post("/api/staff/stock/add")
+@token_required
+def api_staff_stock_add():
+    try:
+        data = request.get_json(force=True) or {}
+        item_id = int(data.get("item_id") or 0)
+        quantity = int(data.get("quantity") or 0)
+        reason = (data.get("reason") or "").strip()
+
+        if item_id <= 0:
+            return jsonify({"success": False, "error": "Valid inventory item must be selected."}), 400
+        if quantity <= 0:
+            return jsonify({"success": False, "error": "Quantity must be greater than zero."}), 400
+        if not reason:
+            return jsonify({"success": False, "error": "Please provide a reason for adding stock."}), 400
+
+        user = getattr(request, "current_user", {})
+        user_name = user.get("name") or "Staff Counter"
+        today_iso = date.today().isoformat()
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                item_name, old_bal, new_bal, change, m_type = process_stock_adjustment(
+                    cur, item_id, "ADD", quantity, today_iso, reason, user_name=user_name
+                )
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "item_id": item_id,
+            "item_name": item_name,
+            "previous_balance": old_bal,
+            "new_balance": new_bal,
+            "quantity_added": quantity,
+            "message": f"Successfully added {quantity} sheets to '{item_name}'. New balance: {new_bal} sheets."
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
 # ── API: PC Print Service Endpoints ──
 @app.route("/api/printer/heartbeat", methods=["POST"])
@@ -2403,6 +2723,7 @@ def api_printer_update_job_status(job_id):
     return jsonify({"success": True, "job_id": job_id, "status": new_status})
 
 @app.route("/api/printer/status", methods=["GET"])
+@token_required
 def api_printer_status():
     with db() as conn:
         with conn.cursor() as cur:
@@ -2430,19 +2751,24 @@ def api_printer_status():
             pending_count = cur.fetchone()["c"]
             cur.execute("SELECT COUNT(*) AS c FROM print_jobs WHERE status = 'Print Failed'")
             failed_count = cur.fetchone()["c"]
+
+    user = getattr(request, "current_user", {})
+    is_admin_user = (user.get("role") == "admin")
             
-    return jsonify({
+    res_data = {
         "success": True,
         "is_online": is_online,
         "status": "online" if is_online else "offline",
         "last_seen": last_seen_str,
         "default_printer": settings.get("default_printer", "__SYSTEM_DEFAULT__"),
         "thermal_width": settings.get("thermal_width", "80mm"),
-        "printer_api_key": settings.get("printer_api_key", "iread-print-token-2026"),
         "pc_info": pc_info,
         "pending_count": pending_count,
         "failed_count": failed_count
-    })
+    }
+    if is_admin_user:
+        res_data["printer_api_key"] = settings.get("printer_api_key", "iread-print-token-2026")
+    return jsonify(res_data)
 
 @app.route("/api/printer/test-print", methods=["POST"])
 @admin_api_required
@@ -2626,7 +2952,7 @@ def printer_settings_page():
     )
 
 def get_period_date_range(period, custom_start=None, custom_end=None):
-    today = date.today()
+    today = get_ist_today()
     if period == "today":
         return today.isoformat(), today.isoformat(), "Today"
     elif period == "yesterday":
@@ -2701,13 +3027,13 @@ def history():
                 query += " AND payment_status = 'Partially Paid'"
 
             if start_d and end_d:
-                query += " AND SUBSTRING(created_at, 1, 10) >= %s AND SUBSTRING(created_at, 1, 10) <= %s"
+                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
                 params.extend([start_d, end_d])
             elif start_d:
-                query += " AND SUBSTRING(created_at, 1, 10) >= %s"
+                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s"
                 params.append(start_d)
             elif end_d:
-                query += " AND SUBSTRING(created_at, 1, 10) <= %s"
+                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
                 params.append(end_d)
 
             # Period stats for the filtered period & search
@@ -2808,6 +3134,12 @@ def get_bill_payments(bill_id):
 
                 cur.execute("SELECT * FROM bill_payments WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
                 payments = cur.fetchall()
+                formatted_payments = []
+                for p in payments:
+                    pd = dict(p)
+                    pd["created_at_utc"] = pd.get("created_at")
+                    pd["created_at"] = format_ist_datetime_str(pd.get("created_at"))
+                    formatted_payments.append(pd)
 
         return {
             "success": True,
@@ -2819,7 +3151,7 @@ def get_bill_payments(bill_id):
                 "balance": bill["balance"],
                 "payment_status": bill.get("payment_status", "Paid")
             },
-            "payments": payments
+            "payments": formatted_payments
         }
     except Exception as e:
         return {"success": False, "error": str(e)}, 400
@@ -2841,11 +3173,24 @@ def get_bill_details(bill_id):
                 cur.execute("SELECT * FROM bill_payments WHERE bill_id=%s ORDER BY id ASC", (bill_id,))
                 payments = cur.fetchall()
 
+                bill_dict = dict(bill)
+                bill_dict["created_at_utc"] = bill_dict.get("created_at")
+                bill_dict["created_at"] = format_ist_datetime_str(bill_dict.get("created_at"))
+                bill_dict["created_at_ist"] = bill_dict["created_at"]
+                if bill_dict.get("original_created_at"):
+                    bill_dict["original_created_at_ist"] = format_ist_datetime_str(bill_dict["original_created_at"])
+                formatted_payments = []
+                for p in payments:
+                    pd = dict(p)
+                    pd["created_at_utc"] = pd.get("created_at")
+                    pd["created_at"] = format_ist_datetime_str(pd.get("created_at"))
+                    formatted_payments.append(pd)
+
         return {
             "success": True,
-            "bill": bill,
+            "bill": bill_dict,
             "items": items,
-            "payments": payments,
+            "payments": formatted_payments,
             "is_admin": bool(session.get("is_admin"))
         }
     except Exception as e:
@@ -2853,7 +3198,7 @@ def get_bill_details(bill_id):
 
 # ── API: Delete Bill (Admin only with stock return) ──
 @app.post("/api/bills/<int:bill_id>/delete")
-@admin_required
+@admin_api_required
 def delete_bill(bill_id):
     try:
         data = request.get_json(silent=True) or {}
@@ -2918,7 +3263,17 @@ def calculate_bill_corrections(cur, bill, old_items, data):
     discount = money(data.get("discount", 0))
     other_charges = money(data.get("other_charges", 0))
     reason = (data.get("reason") or "").strip()
-    new_created_at = (data.get("created_at") or bill["created_at"]).strip()
+    new_created_at_input = (data.get("created_at") or "").strip()
+    if new_created_at_input:
+        try:
+            dt_obj = datetime.fromisoformat(new_created_at_input.replace(" ", "T"))
+            if dt_obj.tzinfo is None:
+                dt_obj = dt_obj.replace(tzinfo=IST_TZ)
+            new_created_at = dt_obj.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            new_created_at = to_utc_iso(new_created_at_input)
+    else:
+        new_created_at = bill["created_at"]
 
     # Pre-fetch active inventory & services
     cur.execute("""
@@ -2993,11 +3348,24 @@ def calculate_bill_corrections(cur, bill, old_items, data):
                     break
 
         is_double = sides.lower().startswith("double")
+        has_custom_rate = bool(it.get("has_custom_rate") or it.get("custom_rate") or it.get("is_custom_rate"))
+        user_rate = money(it.get("rate", 0))
+
+        default_tiered_total = 0.0
+        default_tiered_rate = 0.0
         if s_obj and s_obj.get("extra_copy_rate") is not None and float(s_obj.get("extra_copy_rate") or 0) > 0:
             first_copy = float(s_obj["double_rate"] if (is_double and s_obj.get("double_rate") is not None) else s_obj["rate"])
             extra_copy = float(s_obj["extra_copy_rate"])
-            line_total = money(first_copy + max(0, qty - 1) * extra_copy)
-            rate = money(line_total / qty)
+            default_tiered_total = money(first_copy + max(0, qty - 1) * extra_copy)
+            default_tiered_rate = money(default_tiered_total / qty)
+
+        if user_rate > 0 and (has_custom_rate or (s_obj and s_obj.get("extra_copy_rate") and user_rate != default_tiered_rate)):
+            # Retain saved rate or explicitly edited rate!
+            rate = user_rate
+            line_total = money(qty * pages_per_copy * rate)
+        elif s_obj and s_obj.get("extra_copy_rate") is not None and float(s_obj.get("extra_copy_rate") or 0) > 0:
+            line_total = default_tiered_total
+            rate = default_tiered_rate
         else:
             if rate <= 0.001 and s_obj:
                 rate = s_obj["double_rate"] if (is_double and s_obj.get("double_rate")) else s_obj["rate"]
@@ -3118,7 +3486,7 @@ def calculate_bill_corrections(cur, bill, old_items, data):
 
 # ── API: Inspect Bill for Editing (Admin only) ──
 @app.get("/api/bills/<int:bill_id>/edit-details")
-@admin_required
+@admin_api_required
 def get_bill_edit_details(bill_id):
     try:
         with db() as conn:
@@ -3143,14 +3511,25 @@ def get_bill_edit_details(bill_id):
                 cur.execute("SELECT * FROM bill_audit_log WHERE bill_id=%s OR bill_no=%s ORDER BY id DESC", (bill_id, bill["bill_no"]))
                 audit_logs = cur.fetchall()
 
+        b_dict = dict(bill)
+        b_dict["created_at_utc"] = b_dict.get("created_at")
+        b_dict["created_at_ist"] = format_ist_datetime_str(b_dict.get("created_at"), "%Y-%m-%dT%H:%M")
+        b_dict["original_created_at_ist"] = format_ist_datetime_str(b_dict.get("original_created_at"), "%Y-%m-%dT%H:%M")
+
+        formatted_audit_logs = []
+        for a in audit_logs:
+            ad = dict(a)
+            ad["created_at_ist"] = format_ist_datetime_str(ad.get("created_at"))
+            formatted_audit_logs.append(ad)
+
         return {
             "success": True,
-            "bill": dict(bill),
+            "bill": b_dict,
             "items": [dict(it) for it in items],
             "payments": [dict(p) for p in payments],
             "services": [dict(s) for s in services],
             "inventory": [dict(i) for i in inventory],
-            "audit_logs": [dict(a) for a in audit_logs]
+            "audit_logs": formatted_audit_logs
         }
     except Exception as e:
         return {"success": False, "error": str(e)}, 400
@@ -3158,7 +3537,7 @@ def get_bill_edit_details(bill_id):
 
 # ── API: Preview Bill Corrections & Confirmation Summary (Admin only) ──
 @app.post("/api/bills/<int:bill_id>/edit-preview")
-@admin_required
+@admin_api_required
 def edit_bill_preview(bill_id):
     try:
         data = request.get_json(force=True) or {}
@@ -3269,7 +3648,7 @@ def edit_bill_preview(bill_id):
 
 # ── API: Apply Confirmed Bill Corrections (Admin only with rollback) ──
 @app.post("/api/bills/<int:bill_id>/edit")
-@admin_required
+@admin_api_required
 def edit_bill(bill_id):
     try:
         data = request.get_json(force=True) or {}
@@ -3449,7 +3828,7 @@ def edit_bill(bill_id):
 
 # ── API: View Edit & Audit History for a Bill ──
 @app.get("/api/bills/<int:bill_id>/audit")
-@admin_required
+@admin_api_required
 def get_bill_audit(bill_id):
     try:
         with db() as conn:
@@ -3493,7 +3872,7 @@ def get_bill_audit(bill_id):
 
 # ── API: Record Supplier Purchase Payment (Admin only) ──
 @app.post("/api/purchases/<int:purchase_id>/pay")
-@admin_required
+@admin_api_required
 def pay_supplier_purchase(purchase_id):
     try:
         data = request.get_json(force=True) or {}
@@ -3546,8 +3925,9 @@ def pay_supplier_purchase(purchase_id):
     except Exception as e:
         return {"success": False, "error": str(e)}, 400
 
-# ── API: Get Supplier Purchase Payments ──
+# ── API: Get Supplier Purchase Payments (Admin only) ──
 @app.get("/api/purchases/<int:purchase_id>/payments")
+@admin_api_required
 def get_purchase_payments(purchase_id):
     try:
         with db() as conn:
@@ -3564,9 +3944,10 @@ def get_purchase_payments(purchase_id):
     except Exception as e:
         return {"success": False, "error": str(e)}, 400
 
-# ── API: Create Supplier Purchase (Multi-Item) ──
+# ── API: Create Supplier Purchase (Multi-Item) (Admin only) ──
 @app.post("/api/purchases")
 @app.post("/api/purchases/create")
+@admin_api_required
 def api_create_purchase():
     try:
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
@@ -3601,8 +3982,9 @@ def api_create_purchase():
             return redirect(url_for("inventory_page"))
         return {"success": False, "error": str(e)}, 400
 
-# ── API: Get Full Supplier Purchase Details (Items, Payments & Audit) ──
+# ── API: Get Full Supplier Purchase Details (Admin only) ──
 @app.get("/api/purchases/<int:purchase_id>/details")
+@admin_api_required
 def api_get_purchase_details(purchase_id):
     try:
         with db() as conn:
@@ -3636,7 +4018,7 @@ def api_get_purchase_details(purchase_id):
 
 # ── API: Return Paper Stock to Supplier (Admin only) ──
 @app.post("/api/purchases/<int:purchase_id>/return")
-@admin_required
+@admin_api_required
 def api_return_purchase_item(purchase_id):
     try:
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
@@ -3675,9 +4057,9 @@ def api_return_purchase_item(purchase_id):
             return redirect(url_for("inventory_page"))
         return {"success": False, "error": str(e)}, 400
 
-# ── API: Audit Double-Sided Photocopy/Print Paper Consumption ──
+# ── API: Audit Double-Sided Photocopy/Print Paper Consumption (Admin only) ──
 @app.get("/api/inventory/audit-double-sided")
-@admin_required
+@admin_api_required
 def api_audit_double_sided():
     try:
         with db() as conn:
@@ -3715,7 +4097,7 @@ def api_audit_double_sided():
 
 
 @app.post("/api/inventory/reconcile-double-sided")
-@admin_required
+@admin_api_required
 def api_reconcile_double_sided():
     try:
         user_name = "Admin"
@@ -3803,7 +4185,7 @@ def api_reconcile_double_sided():
 
 # ── API: Edit Supplier Purchase (Admin only with stock reconciliation) ──
 @app.post("/api/purchases/<int:purchase_id>/edit")
-@admin_required
+@admin_api_required
 def api_edit_purchase(purchase_id):
     try:
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
@@ -3838,7 +4220,7 @@ def api_edit_purchase(purchase_id):
 
 # ── API: Delete Supplier Purchase (Admin only with stock reversal) ──
 @app.post("/api/purchases/<int:purchase_id>/delete")
-@admin_required
+@admin_api_required
 def api_delete_purchase(purchase_id):
     try:
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
@@ -3867,7 +4249,7 @@ def api_delete_purchase(purchase_id):
 
 # ── API: Manual Stock Adjustment (Admin only) ──
 @app.post("/api/inventory/adjust")
-@admin_required
+@admin_api_required
 def api_adjust_inventory():
     try:
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
@@ -3906,7 +4288,7 @@ def api_adjust_inventory():
 
 # ── API: Inspect Inventory Item for Removal (Admin only) ──
 @app.get("/api/inventory/<int:item_id>/removal-info")
-@admin_required
+@admin_api_required
 def api_inventory_removal_info(item_id):
     try:
         with db() as conn:
@@ -3950,7 +4332,7 @@ def api_inventory_removal_info(item_id):
 
 # ── API: Safe Remove / Archive Inventory Item (Admin only) ──
 @app.post("/api/inventory/<int:item_id>/remove")
-@admin_required
+@admin_api_required
 def api_inventory_remove(item_id):
     try:
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
@@ -3976,7 +4358,7 @@ def api_inventory_remove(item_id):
 
 # ── API: Reactivate / Restore Inventory Item (Admin only) ──
 @app.post("/api/inventory/<int:item_id>/reactivate")
-@admin_required
+@admin_api_required
 def api_inventory_reactivate(item_id):
     try:
         user_name = "Admin"
@@ -3996,16 +4378,125 @@ def api_inventory_reactivate(item_id):
             return redirect(url_for("inventory_page"))
         return {"success": False, "error": str(e)}, 400
 
+# ── Report Period Helper ──
+def parse_report_period(args):
+    """
+    Parses reporting period from request args and returns:
+    (period, start_date, end_date, selected_date, selected_month, nav_info, header_title)
+    All dates are strings 'YYYY-MM-DD' aligned to Asia/Kolkata timezone.
+    """
+    period = args.get("period", "daily").lower()
+    today_str = get_ist_today_str()
+    today_d = get_ist_today()
+
+    if period == "weekly":
+        ref_str = args.get("date", today_str)
+        try:
+            ref_d = datetime.strptime(ref_str, "%Y-%m-%d").date()
+        except Exception:
+            ref_d = today_d
+        
+        # Monday to Sunday of the selected week
+        start_d = ref_d - timedelta(days=ref_d.weekday())
+        end_d = start_d + timedelta(days=6)
+        start_date = start_d.strftime("%Y-%m-%d")
+        end_date = end_d.strftime("%Y-%m-%d")
+        
+        prev_date = (start_d - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_date = (start_d + timedelta(days=7)).strftime("%Y-%m-%d")
+        header_title = f"Week of {start_d.strftime('%d %b %Y')} – {end_d.strftime('%d %b %Y')}"
+        nav_info = {
+            "prev_url": url_for("reports", period="weekly", date=prev_date),
+            "next_url": url_for("reports", period="weekly", date=next_date),
+            "current_ref": start_date,
+            "is_current": (start_d <= today_d <= end_d)
+        }
+        selected_date = ref_d.strftime("%Y-%m-%d")
+        selected_month = start_d.strftime("%Y-%m")
+
+    elif period == "monthly":
+        month_str = args.get("month", today_d.strftime("%Y-%m"))
+        try:
+            parts = month_str.split("-")
+            year, m_num = int(parts[0]), int(parts[1])
+            start_d = date(year, m_num, 1)
+        except Exception:
+            year, m_num = today_d.year, today_d.month
+            start_d = date(year, m_num, 1)
+        
+        _, num_days = calendar.monthrange(year, m_num)
+        end_d = date(year, m_num, num_days)
+        start_date = start_d.strftime("%Y-%m-%d")
+        end_date = end_d.strftime("%Y-%m-%d")
+
+        prev_m_d = start_d - timedelta(days=1)
+        next_m_d = end_d + timedelta(days=1)
+        prev_month = prev_m_d.strftime("%Y-%m")
+        next_month = next_m_d.strftime("%Y-%m")
+
+        header_title = f"Monthly Report: {start_d.strftime('%B %Y')}"
+        nav_info = {
+            "prev_url": url_for("reports", period="monthly", month=prev_month),
+            "next_url": url_for("reports", period="monthly", month=next_month),
+            "current_ref": start_d.strftime("%Y-%m"),
+            "is_current": (start_d.year == today_d.year and start_d.month == today_d.month)
+        }
+        selected_date = today_str
+        selected_month = start_d.strftime("%Y-%m")
+
+    elif period == "custom":
+        s_str = args.get("start_date", today_str)
+        e_str = args.get("end_date", today_str)
+        try:
+            s_d = datetime.strptime(s_str, "%Y-%m-%d").date()
+            e_d = datetime.strptime(e_str, "%Y-%m-%d").date()
+            if s_d > e_d:
+                s_d, e_d = e_d, s_d
+        except Exception:
+            s_d, e_d = today_d, today_d
+
+        start_date = s_d.strftime("%Y-%m-%d")
+        end_date = e_d.strftime("%Y-%m-%d")
+        header_title = f"Custom Range: {s_d.strftime('%d %b %Y')} to {e_d.strftime('%d %b %Y')}"
+        nav_info = {}
+        selected_date = today_str
+        selected_month = s_d.strftime("%Y-%m")
+
+    else:
+        period = "daily"
+        date_str = args.get("date", today_str)
+        try:
+            cur_d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except Exception:
+            cur_d = today_d
+        
+        start_date = cur_d.strftime("%Y-%m-%d")
+        end_date = cur_d.strftime("%Y-%m-%d")
+        prev_date = (cur_d - timedelta(days=1)).strftime("%Y-%m-%d")
+        next_date = (cur_d + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        header_title = f"Daily Report: {cur_d.strftime('%d %b %Y (%A)')}"
+        nav_info = {
+            "prev_url": url_for("reports", period="daily", date=prev_date),
+            "next_url": url_for("reports", period="daily", date=next_date),
+            "current_ref": start_date,
+            "is_current": (cur_d == today_d)
+        }
+        selected_date = start_date
+        selected_month = cur_d.strftime("%Y-%m")
+
+    return period, start_date, end_date, selected_date, selected_month, nav_info, header_title
+
 # ── Admin Protected Reports & Profit Dashboard ──
 @app.route("/reports")
 @admin_required
 def reports():
-    selected_date = request.args.get("date", date.today().isoformat())
+    period, start_date, end_date, selected_date, selected_month, nav_info, header_title = parse_report_period(request.args)
     is_admin = bool(session.get("is_admin"))
 
     with db() as conn:
         with conn.cursor() as cur:
-            # Daily Summary (Sales, Paper Cost, Profit)
+            # Summary (Bills count, Sales, Paper Cost, Profit)
             cur.execute("""
                 SELECT COUNT(*) AS bills, 
                        COALESCE(SUM(subtotal),0) AS subtotal,
@@ -4015,8 +4506,10 @@ def reports():
                        COALESCE(SUM(balance),0) AS balance,
                        COALESCE(SUM(paper_cost),0) AS paper_cost,
                        COALESCE(SUM(profit),0) AS profit
-                FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0
-            """, (selected_date,))
+                FROM bills 
+                WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND is_deleted=0
+            """, (start_date, end_date))
             summary = cur.fetchone()
 
             # Physical Paper sheets & units usage
@@ -4024,30 +4517,50 @@ def reports():
                 SELECT COALESCE(SUM(i.paper_sheets),0) AS sheets,
                        COALESCE(SUM(i.color_units),0) AS color_units,
                        COALESCE(SUM(CASE WHEN i.print_type='bw' THEN i.quantity*i.pages_per_copy ELSE 0 END),0) AS bw_units,
+                       COALESCE(SUM(CASE WHEN i.print_type NOT IN ('bw', 'color', 'photo') THEN i.quantity ELSE 0 END),0) AS other_units,
                        COALESCE(SUM(i.paper_cost),0) AS paper_cost
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE substr(b.created_at,1,10)=%s AND b.is_deleted=0
-            """, (selected_date,))
+                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND b.is_deleted=0
+            """, (start_date, end_date))
             usage = cur.fetchone()
 
-            # Payment Methods Breakdown
+            # Payment Methods Breakdown from bill_payments
             cur.execute("""
-                SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount,
-                       COALESCE(SUM(paid),0) AS paid
-                FROM bills WHERE substr(created_at,1,10)=%s AND is_deleted=0 GROUP BY payment_method
-            """, (selected_date,))
+                SELECT bp.payment_method, COUNT(*) AS count, COALESCE(SUM(bp.amount),0) AS amount,
+                       COALESCE(SUM(bp.amount),0) AS paid
+                FROM bill_payments bp 
+                JOIN bills b ON b.id=bp.bill_id
+                WHERE to_char(bp.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND b.is_deleted=0 
+                GROUP BY bp.payment_method
+                ORDER BY amount DESC
+            """, (start_date, end_date))
             payment_rows = cur.fetchall()
+            if not payment_rows:
+                # Fallback to bills table
+                cur.execute("""
+                    SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount,
+                           COALESCE(SUM(paid),0) AS paid
+                    FROM bills 
+                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                      AND is_deleted=0 
+                    GROUP BY payment_method
+                    ORDER BY amount DESC
+                """, (start_date, end_date))
+                payment_rows = cur.fetchall()
 
-            # Maintenance expenses for selected date
+            # Maintenance expenses for period
             cur.execute("""
-                SELECT category, title, amount 
+                SELECT expense_date, category, title, amount 
                 FROM maintenance_expenses 
-                WHERE expense_date=%s
-            """, (selected_date,))
+                WHERE expense_date BETWEEN %s AND %s
+                ORDER BY expense_date DESC
+            """, (start_date, end_date))
             maintenance_rows = cur.fetchall()
             maintenance_total = sum(r['amount'] for r in maintenance_rows)
 
-            # Net Profit = Billing Gross Profit - Daily Operating/Maintenance Expenses
+            # Net Profit = Billing Gross Profit - Maintenance Expenses
             net_profit = money(summary['profit'] - maintenance_total)
 
             # Service Performance with Profit Margin
@@ -4059,14 +4572,77 @@ def reports():
                        SUM(i.paper_cost) AS paper_cost,
                        SUM(i.profit) AS profit
                 FROM bill_items i JOIN bills b ON b.id=i.bill_id
-                WHERE substr(b.created_at,1,10)=%s AND b.is_deleted=0
+                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND b.is_deleted=0
                 GROUP BY i.service_name, i.print_type ORDER BY amount DESC
-            """, (selected_date,))
+            """, (start_date, end_date))
             top_items = cur.fetchall()
+
+            # Daily Breakdown Table (for Weekly, Monthly, Custom Range)
+            daily_breakdown = []
+            if period in ("weekly", "monthly", "custom"):
+                # If weekly: show all 7 days of the week; if monthly/custom: show active days
+                active_filter = "" if period == "weekly" else "WHERE COALESCE(db.bills_count, 0) > 0 OR COALESCE(dm.maint_amount, 0) > 0"
+                cur.execute(f"""
+                    WITH daily_bills AS (
+                        SELECT 
+                            to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day_str,
+                            COUNT(*) AS bills_count,
+                            COALESCE(SUM(total), 0) AS gross_sales,
+                            COALESCE(SUM(paid), 0) AS collected,
+                            COALESCE(SUM(paper_cost), 0) AS paper_cost,
+                            COALESCE(SUM(profit), 0) AS gross_profit
+                        FROM bills
+                        WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                          AND is_deleted = 0
+                        GROUP BY 1
+                    ),
+                    daily_items AS (
+                        SELECT 
+                            to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day_str,
+                            COALESCE(SUM(i.paper_sheets), 0) AS paper_sheets
+                        FROM bill_items i
+                        JOIN bills b ON b.id = i.bill_id
+                        WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                          AND b.is_deleted = 0
+                        GROUP BY 1
+                    ),
+                    daily_maint AS (
+                        SELECT 
+                            expense_date AS day_str,
+                            COALESCE(SUM(amount), 0) AS maint_amount
+                        FROM maintenance_expenses
+                        WHERE expense_date BETWEEN %s AND %s
+                        GROUP BY 1
+                    )
+                    SELECT 
+                        to_char(d.dt, 'YYYY-MM-DD') AS date_str,
+                        to_char(d.dt, 'DD/MM/YYYY') AS date_formatted,
+                        to_char(d.dt, 'Dy') AS day_name,
+                        COALESCE(db.bills_count, 0) AS bills_count,
+                        COALESCE(db.gross_sales, 0) AS gross_sales,
+                        COALESCE(db.collected, 0) AS collected,
+                        COALESCE(di.paper_sheets, 0) AS paper_sheets,
+                        COALESCE(dm.maint_amount, 0) AS maint_amount,
+                        COALESCE(db.gross_profit, 0) - COALESCE(dm.maint_amount, 0) AS net_profit
+                    FROM generate_series(%s::date, %s::date, '1 day'::interval) d(dt)
+                    LEFT JOIN daily_bills db ON db.day_str = to_char(d.dt, 'YYYY-MM-DD')
+                    LEFT JOIN daily_items di ON di.day_str = to_char(d.dt, 'YYYY-MM-DD')
+                    LEFT JOIN daily_maint dm ON dm.day_str = to_char(d.dt, 'YYYY-MM-DD')
+                    {active_filter}
+                    ORDER BY d.dt DESC
+                """, (start_date, end_date, start_date, end_date, start_date, end_date, start_date, end_date))
+                daily_breakdown = cur.fetchall()
 
     return render_template(
         "reports.html",
+        period=period,
+        start_date=start_date,
+        end_date=end_date,
         selected_date=selected_date,
+        selected_month=selected_month,
+        nav_info=nav_info,
+        header_title=header_title,
         summary=summary,
         usage=usage,
         payment_rows=payment_rows,
@@ -4074,8 +4650,218 @@ def reports():
         maintenance_total=maintenance_total,
         net_profit=net_profit,
         top_items=top_items,
+        daily_breakdown=daily_breakdown,
         is_admin=is_admin,
-        today=date.today().isoformat()
+        today=get_ist_today_str()
+    )
+
+# ── CSV Export Route for Selected Report Period ──
+@app.route("/reports/export")
+@admin_required
+def export_reports_csv():
+    period, start_date, end_date, selected_date, selected_month, nav_info, header_title = parse_report_period(request.args)
+    is_admin = bool(session.get("is_admin"))
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            # Summary
+            cur.execute("""
+                SELECT COUNT(*) AS bills, 
+                       COALESCE(SUM(subtotal),0) AS subtotal,
+                       COALESCE(SUM(discount),0) AS discount, 
+                       COALESCE(SUM(total),0) AS total,
+                       COALESCE(SUM(paid),0) AS paid, 
+                       COALESCE(SUM(balance),0) AS balance,
+                       COALESCE(SUM(paper_cost),0) AS paper_cost,
+                       COALESCE(SUM(profit),0) AS profit
+                FROM bills 
+                WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND is_deleted=0
+            """, (start_date, end_date))
+            summary = cur.fetchone()
+
+            # Paper usage
+            cur.execute("""
+                SELECT COALESCE(SUM(i.paper_sheets),0) AS sheets,
+                       COALESCE(SUM(i.color_units),0) AS color_units,
+                       COALESCE(SUM(CASE WHEN i.print_type='bw' THEN i.quantity*i.pages_per_copy ELSE 0 END),0) AS bw_units,
+                       COALESCE(SUM(CASE WHEN i.print_type NOT IN ('bw', 'color', 'photo') THEN i.quantity ELSE 0 END),0) AS other_units,
+                       COALESCE(SUM(i.paper_cost),0) AS paper_cost
+                FROM bill_items i JOIN bills b ON b.id=i.bill_id
+                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND b.is_deleted=0
+            """, (start_date, end_date))
+            usage = cur.fetchone()
+
+            # Payments
+            cur.execute("""
+                SELECT bp.payment_method, COUNT(*) AS count, COALESCE(SUM(bp.amount),0) AS amount
+                FROM bill_payments bp 
+                JOIN bills b ON b.id=bp.bill_id
+                WHERE to_char(bp.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND b.is_deleted=0 
+                GROUP BY bp.payment_method
+                ORDER BY amount DESC
+            """, (start_date, end_date))
+            payment_rows = cur.fetchall()
+            if not payment_rows:
+                cur.execute("""
+                    SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total),0) AS amount
+                    FROM bills 
+                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                      AND is_deleted=0 
+                    GROUP BY payment_method
+                    ORDER BY amount DESC
+                """, (start_date, end_date))
+                payment_rows = cur.fetchall()
+
+            # Maintenance
+            cur.execute("""
+                SELECT expense_date, category, title, amount 
+                FROM maintenance_expenses 
+                WHERE expense_date BETWEEN %s AND %s
+                ORDER BY expense_date DESC
+            """, (start_date, end_date))
+            maintenance_rows = cur.fetchall()
+            maintenance_total = sum(r['amount'] for r in maintenance_rows)
+            net_profit = money(summary['profit'] - maintenance_total)
+
+            # Daily breakdown
+            cur.execute("""
+                WITH daily_bills AS (
+                    SELECT 
+                        to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day_str,
+                        COUNT(*) AS bills_count,
+                        COALESCE(SUM(total), 0) AS gross_sales,
+                        COALESCE(SUM(paid), 0) AS collected,
+                        COALESCE(SUM(paper_cost), 0) AS paper_cost,
+                        COALESCE(SUM(profit), 0) AS gross_profit
+                    FROM bills
+                    WHERE to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                      AND is_deleted = 0
+                    GROUP BY 1
+                ),
+                daily_items AS (
+                    SELECT 
+                        to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS day_str,
+                        COALESCE(SUM(i.paper_sheets), 0) AS paper_sheets
+                    FROM bill_items i
+                    JOIN bills b ON b.id = i.bill_id
+                    WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s
+                      AND b.is_deleted = 0
+                    GROUP BY 1
+                ),
+                daily_maint AS (
+                    SELECT 
+                        expense_date AS day_str,
+                        COALESCE(SUM(amount), 0) AS maint_amount
+                    FROM maintenance_expenses
+                    WHERE expense_date BETWEEN %s AND %s
+                    GROUP BY 1
+                )
+                SELECT 
+                    to_char(d.dt, 'YYYY-MM-DD') AS date_str,
+                    to_char(d.dt, 'DD/MM/YYYY') AS date_formatted,
+                    to_char(d.dt, 'Dy') AS day_name,
+                    COALESCE(db.bills_count, 0) AS bills_count,
+                    COALESCE(db.gross_sales, 0) AS gross_sales,
+                    COALESCE(db.collected, 0) AS collected,
+                    COALESCE(di.paper_sheets, 0) AS paper_sheets,
+                    COALESCE(dm.maint_amount, 0) AS maint_amount,
+                    COALESCE(db.gross_profit, 0) - COALESCE(dm.maint_amount, 0) AS net_profit
+                FROM generate_series(%s::date, %s::date, '1 day'::interval) d(dt)
+                LEFT JOIN daily_bills db ON db.day_str = to_char(d.dt, 'YYYY-MM-DD')
+                LEFT JOIN daily_items di ON di.day_str = to_char(d.dt, 'YYYY-MM-DD')
+                LEFT JOIN daily_maint dm ON dm.day_str = to_char(d.dt, 'YYYY-MM-DD')
+                ORDER BY d.dt DESC
+            """, (start_date, end_date, start_date, end_date, start_date, end_date, start_date, end_date))
+            daily_breakdown = cur.fetchall()
+
+            # Service Performance
+            cur.execute("""
+                SELECT i.service_name, i.print_type,
+                       SUM(i.quantity*i.pages_per_copy) AS units, 
+                       SUM(i.paper_sheets) AS sheets,
+                       SUM(i.line_total) AS amount,
+                       SUM(i.paper_cost) AS paper_cost,
+                       SUM(i.profit) AS profit
+                FROM bill_items i JOIN bills b ON b.id=i.bill_id
+                WHERE to_char(b.created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') BETWEEN %s AND %s 
+                  AND b.is_deleted=0
+                GROUP BY i.service_name, i.print_type ORDER BY amount DESC
+            """, (start_date, end_date))
+            top_items = cur.fetchall()
+
+    # Build CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Title & Metadata
+    writer.writerow(["IREAD BILLING APP - SHOP PERFORMANCE REPORT"])
+    writer.writerow(["Period", period.upper()])
+    writer.writerow(["Date Range", f"{start_date} to {end_date}"])
+    writer.writerow(["Generated At (IST)", get_ist_now().strftime("%Y-%m-%d %H:%M:%S")])
+    writer.writerow([])
+
+    # Financial Summary
+    writer.writerow(["FINANCIAL SUMMARY"])
+    writer.writerow(["Metric", "Value"])
+    writer.writerow(["Bills Generated", summary["bills"]])
+    writer.writerow(["Total Subtotal (INR)", f"{summary['subtotal']:.2f}"])
+    writer.writerow(["Total Discount (INR)", f"{summary['discount']:.2f}"])
+    writer.writerow(["Gross Sales (INR)", f"{summary['total']:.2f}"])
+    writer.writerow(["Amount Collected (INR)", f"{summary['paid']:.2f}"])
+    writer.writerow(["Balance Due (INR)", f"{summary['balance']:.2f}"])
+    if is_admin:
+        writer.writerow(["Estimated Paper Cost (INR)", f"{summary['paper_cost']:.2f}"])
+        writer.writerow(["Billing Gross Profit (INR)", f"{summary['profit']:.2f}"])
+        writer.writerow(["Maintenance Expenses (INR)", f"{maintenance_total:.2f}"])
+        writer.writerow(["Net Profit (INR)", f"{net_profit:.2f}"])
+    writer.writerow(["Paper Sheets Used", usage["sheets"]])
+    writer.writerow(["B&W Units", usage["bw_units"]])
+    writer.writerow(["Colour Units", usage["color_units"]])
+    writer.writerow([])
+
+    # Payment Methods
+    writer.writerow(["PAYMENT METHODS BREAKDOWN"])
+    writer.writerow(["Method", "Transactions", "Amount (INR)"])
+    for p in payment_rows:
+        writer.writerow([p["payment_method"], p["count"], f"{p['amount']:.2f}"])
+    writer.writerow([])
+
+    # Daily Breakdown Table
+    writer.writerow(["DAILY BREAKDOWN"])
+    daily_headers = ["Date", "Day", "Bills Count", "Gross Sales (INR)", "Collected (INR)", "Paper Sheets"]
+    if is_admin:
+        daily_headers.extend(["Maintenance (INR)", "Net Profit (INR)"])
+    writer.writerow(daily_headers)
+    for d in daily_breakdown:
+        if d["bills_count"] > 0 or d["maint_amount"] > 0 or period == "weekly":
+            row = [d["date_formatted"], d["day_name"], d["bills_count"], f"{d['gross_sales']:.2f}", f"{d['collected']:.2f}", d["paper_sheets"]]
+            if is_admin:
+                row.extend([f"{d['maint_amount']:.2f}", f"{d['net_profit']:.2f}"])
+            writer.writerow(row)
+    writer.writerow([])
+
+    # Service Performance
+    writer.writerow(["SERVICE PERFORMANCE BREAKDOWN"])
+    svc_headers = ["Service Name", "Category", "Units Billed", "Sheets Consumed", "Total Sales (INR)"]
+    if is_admin:
+        svc_headers.extend(["Paper Cost (INR)", "Gross Profit (INR)", "Profit Margin %"])
+    writer.writerow(svc_headers)
+    for s in top_items:
+        margin_pct = f"{(s['profit'] / s['amount'] * 100):.1f}%" if s['amount'] > 0 else "0%"
+        row = [s["service_name"], s["print_type"].upper(), s["units"], s["sheets"], f"{s['amount']:.2f}"]
+        if is_admin:
+            row.extend([f"{s['paper_cost']:.2f}", f"{s['profit']:.2f}", margin_pct])
+        writer.writerow(row)
+
+    csv_data = output.getvalue()
+    filename = f"iread_report_{period}_{start_date}_to_{end_date}.csv"
+    return Response(
+        csv_data,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
 # ── Price List & Items Config (Admin only) ──
@@ -4225,13 +5011,13 @@ def export_csv():
                 query += " AND payment_status = %s"
                 params.append(status_filter)
             if start_d and end_d:
-                query += " AND SUBSTRING(created_at, 1, 10) >= %s AND SUBSTRING(created_at, 1, 10) <= %s"
+                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
                 params.extend([start_d, end_d])
             elif start_d:
-                query += " AND SUBSTRING(created_at, 1, 10) >= %s"
+                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') >= %s"
                 params.append(start_d)
             elif end_d:
-                query += " AND SUBSTRING(created_at, 1, 10) <= %s"
+                query += " AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') <= %s"
                 params.append(end_d)
             query += " ORDER BY id DESC"
             cur.execute(query, tuple(params))

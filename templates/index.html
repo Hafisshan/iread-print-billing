@@ -68,8 +68,11 @@
   <!-- ── CART PANEL ── -->
   <div class="pos-cart" id="cartPanel">
     <div class="cart-header">
-      <span class="cart-title">🛒 Bill</span>
-      <div class="cart-meta-row">
+      <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+        <span class="cart-title">🛒 Bill</span>
+        <button type="button" id="clearCartBtn" title="Clear Bill & Start Fresh" style="background:#f3f0fa; border:1px solid #d4caed; border-radius:6px; padding:3px 8px; font-size:11px; font-weight:700; color:var(--accent); cursor:pointer;">+ New Bill</button>
+      </div>
+      <div class="cart-meta-row" style="margin-top:6px;">
         <select name="payment_method" id="pmMethod" class="cart-select">
           <option>Cash</option><option>UPI</option><option>Card</option>
           <option>Credit</option><option>Other</option>
@@ -176,10 +179,15 @@
         </div>
       </div>
     </div>
-    <div class="mf-row">
-      <div class="mf-group" style="width: 100%;">
-        <label>Rate / unit (₹)</label>
-        <input id="mRate" class="modal-rate-input" type="number" min="0" step="0.01">
+    <div class="mf-group" style="width: 100%; margin-top: 4px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+        <label for="mRate" style="cursor: pointer; margin: 0;">Rate / unit (₹)</label>
+        <span id="mCustomBadge" style="font-size: 11px; font-weight: 700; color: #2563eb; display: none;">✎ Custom Rate Active</span>
+      </div>
+      <div style="position: relative; display: flex; align-items: center;">
+        <span style="position: absolute; left: 14px; font-size: 16px; font-weight: 700; color: var(--muted); pointer-events: none;">₹</span>
+        <input id="mRate" class="modal-rate-input" type="number" min="0" step="0.01" style="padding-left: 32px; padding-right: 70px; text-align: left; font-size: 18px; font-weight: 800;" placeholder="0.00">
+        <button type="button" id="mClearRateBtn" title="Clear Rate" style="position: absolute; right: 10px; background: #f3f0fa; border: 1px solid #dcd5e8; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 700; color: #6b7280; cursor: pointer;">Clear</button>
       </div>
     </div>
     <div class="modal-line-total">
@@ -197,9 +205,10 @@
 
 <script>
 /* ─────────── State ─────────── */
-let cart = [];          // [{id,name,rate,singleRate,doubleRate,type,size,qty,sides,lineTotal}]
+let cart = [];          // [{id,name,rate,singleRate,doubleRate,type,size,qty,sides,lineTotal,hasCustomRate}]
 let editingIdx = null;  // index of cart item being edited (null = new)
 let currentItemConfig = null;
+let isRateManuallyModified = false;
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -295,9 +304,15 @@ function openModal(item) {
   document.getElementById('mQty').value = item.qty || 1;
   
   setSides(item.sides || 'Single');
-  if (editingIdx !== null && item.rate !== undefined && item.rate !== null && !item.extraCopyRate) {
-    document.getElementById('mRate').value = item.rate;
+
+  if (editingIdx !== null && item.isCustomRate) {
+    isRateManuallyModified = true;
+    document.getElementById('mRate').value = Number(item.rate).toFixed(2);
+  } else if (editingIdx !== null && item.rate !== undefined && item.rate !== null && !item.extraCopyRate) {
+    isRateManuallyModified = false;
+    document.getElementById('mRate').value = Number(item.rate).toFixed(2);
   } else {
+    isRateManuallyModified = false;
     updateRateForSides(item.sides || 'Single');
   }
   updateModalAmount();
@@ -305,7 +320,9 @@ function openModal(item) {
   document.getElementById('itemModal').classList.add('open');
   document.getElementById('modalBackdrop').classList.add('open');
   document.getElementById('modalAdd').textContent = editingIdx !== null ? 'Update' : 'Add to Bill';
-  setTimeout(() => document.getElementById('mName').focus(), 100);
+  if (isCustom) {
+    setTimeout(() => document.getElementById('mName').focus(), 100);
+  }
 }
 
 function closeModal() {
@@ -313,6 +330,9 @@ function closeModal() {
   document.getElementById('modalBackdrop').classList.remove('open');
   editingIdx = null;
   currentItemConfig = null;
+  isRateManuallyModified = false;
+  const customBadge = document.getElementById('mCustomBadge');
+  if (customBadge) customBadge.style.display = 'none';
 }
 
 document.getElementById('modalClose').addEventListener('click', closeModal);
@@ -328,6 +348,7 @@ function setSides(val) {
 
 function updateRateForSides(sidesVal) {
   if (!currentItemConfig) return;
+  if (isRateManuallyModified) return; // Preserve user entered custom rate!
   const isDouble = sidesVal.toLowerCase().includes('double');
   if (currentItemConfig.extraCopyRate) {
     const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
@@ -360,17 +381,42 @@ document.querySelectorAll('.step-btn').forEach(btn => {
   });
 });
 
-['mQty','mRate'].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener('input', updateModalAmount);
-});
+const mRateEl = document.getElementById('mRate');
+const mClearRateBtn = document.getElementById('mClearRateBtn');
+if (mRateEl) {
+  mRateEl.addEventListener('focus', function() {
+    setTimeout(() => this.select(), 10);
+  });
+  mRateEl.addEventListener('click', function() {
+    this.select();
+  });
+  mRateEl.addEventListener('input', () => {
+    isRateManuallyModified = true;
+    updateModalAmount();
+  });
+}
+
+if (mClearRateBtn && mRateEl) {
+  mClearRateBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    isRateManuallyModified = true;
+    mRateEl.value = '';
+    mRateEl.focus();
+    updateModalAmount();
+  });
+}
+
+const mQtyEl = document.getElementById('mQty');
+if (mQtyEl) {
+  mQtyEl.addEventListener('input', updateModalAmount);
+}
 
 function updateModalAmount() {
   const qty = Math.max(1, parseInt(document.getElementById('mQty').value) || 1);
   const sides = document.querySelector('.seg-btn.active')?.dataset.val || 'Single';
   const isDouble = sides.toLowerCase().includes('double');
 
-  // Physical sheets calculation: 1 copy = 1 physical sheet for both single-side and double-side jobs
+  // Physical sheets calculation
   let sheets = 0;
   if (currentItemConfig && currentItemConfig.type === 'service' && currentItemConfig.size === 'Digital') {
     sheets = 0;
@@ -379,9 +425,33 @@ function updateModalAmount() {
   }
   document.getElementById('mSheets').textContent = sheets + ' sheet' + (sheets === 1 ? '' : 's');
 
+  let rawRate = document.getElementById('mRate').value.trim();
+  let rateVal = parseFloat(rawRate);
+  if (isNaN(rateVal) || rateVal < 0) rateVal = 0;
+
   let total = 0;
   const pNote = document.getElementById('mPricingNote');
-  if (currentItemConfig && currentItemConfig.extraCopyRate) {
+  const customBadge = document.getElementById('mCustomBadge');
+
+  if (isRateManuallyModified) {
+    // Custom user entered rate for any item or category
+    total = Math.round(qty * rateVal * 100) / 100;
+    if (customBadge) customBadge.style.display = 'inline';
+    if (pNote) {
+      pNote.style.display = 'block';
+      pNote.innerHTML = `<span style="color:#2563eb; font-weight:700;">Custom Rate:</span> ₹${rateVal.toFixed(2)} / unit applied <button type="button" id="mResetRateBtn" style="border:none; background:transparent; color:#dc2626; font-size:11px; margin-left:6px; text-decoration:underline; font-weight:700; cursor:pointer;">Reset Default</button>`;
+      const resetBtn = document.getElementById('mResetRateBtn');
+      if (resetBtn) {
+        resetBtn.onclick = () => {
+          isRateManuallyModified = false;
+          if (customBadge) customBadge.style.display = 'none';
+          updateRateForSides(sides);
+          updateModalAmount();
+        };
+      }
+    }
+  } else if (currentItemConfig && currentItemConfig.extraCopyRate) {
+    if (customBadge) customBadge.style.display = 'none';
     total = calcItemLineTotal(currentItemConfig, qty, sides);
     document.getElementById('mRate').value = (total / qty).toFixed(2);
     if (pNote) {
@@ -391,8 +461,8 @@ function updateModalAmount() {
       pNote.innerHTML = `<span style="color:#b84a00; font-weight:700;">Pricing rule:</span> ₹${firstPrice} (1st copy) + ₹${extraPrice}/additional copy`;
     }
   } else {
-    const rate = parseFloat(document.getElementById('mRate').value) || 0;
-    total = qty * rate;
+    if (customBadge) customBadge.style.display = 'none';
+    total = Math.round(qty * rateVal * 100) / 100;
     if (pNote) pNote.style.display = 'none';
   }
 
@@ -411,33 +481,69 @@ document.getElementById('modalAdd').addEventListener('click', () => {
   const doubleRate = currentItemConfig && currentItemConfig.doubleRate !== undefined ? currentItemConfig.doubleRate : 0;
   const extraCopyRate = currentItemConfig && currentItemConfig.extraCopyRate !== undefined ? currentItemConfig.extraCopyRate : null;
 
-  let lineTotal = 0;
-  let rate = 0;
+  const rawRate = document.getElementById('mRate').value.trim();
+  let parsedRate = parseFloat(rawRate);
+  if (isNaN(parsedRate) || parsedRate < 0) parsedRate = 0;
+
+  // Determine standard rule rate to auto-detect manual changes
+  let defaultTierRate = 0;
   if (extraCopyRate) {
-    lineTotal = calcItemLineTotal(currentItemConfig, qty, sides);
-    rate = parseFloat((lineTotal / qty).toFixed(2));
+    defaultTierRate = parseFloat((calcItemLineTotal(currentItemConfig, qty, sides) / qty).toFixed(2));
   } else {
-    rate = parseFloat(document.getElementById('mRate').value) || 0;
-    lineTotal = qty * rate;
+    defaultTierRate = sides.toLowerCase().includes('double') && doubleRate ? doubleRate : singleRate;
+  }
+  const isCustomRate = isRateManuallyModified || (Math.abs(parsedRate - defaultTierRate) > 0.001);
+
+  let lineTotal = 0;
+  let rate = parsedRate;
+  if (isCustomRate) {
+    rate = Math.round(parsedRate * 100) / 100;
+    lineTotal = Math.round(qty * rate * 100) / 100;
+  } else if (extraCopyRate) {
+    lineTotal = calcItemLineTotal(currentItemConfig, qty, sides);
+    rate = defaultTierRate;
+  } else {
+    rate = Math.round(parsedRate * 100) / 100;
+    lineTotal = Math.round(qty * rate * 100) / 100;
   }
 
+  const itemObj = {
+    id,
+    name,
+    type,
+    size,
+    qty,
+    rate,
+    singleRate,
+    doubleRate,
+    extraCopyRate: isCustomRate ? null : extraCopyRate,
+    originalExtraCopyRate: extraCopyRate,
+    isCustomRate: isCustomRate,
+    sides,
+    lineTotal
+  };
+
   if (editingIdx !== null && editingIdx >= 0 && editingIdx < cart.length) {
-    cart[editingIdx] = { ...cart[editingIdx], name, type, size, qty, rate, singleRate, doubleRate, extraCopyRate, sides, lineTotal };
+    cart[editingIdx] = itemObj;
   } else {
-    const existingIdx = cart.findIndex(item =>
-      ((item.id && id !== 'custom' && item.id === id) || (item.name === name)) &&
-      item.sides === sides
+    const existingIdx = cart.findIndex(it =>
+      ((it.id && id !== 'custom' && it.id === id) || (it.name === name)) &&
+      it.sides === sides &&
+      !!it.isCustomRate === !!isCustomRate &&
+      (!isCustomRate || it.rate === rate)
     );
     if (existingIdx !== -1) {
       cart[existingIdx].qty += qty;
-      if (cart[existingIdx].extraCopyRate) {
+      if (cart[existingIdx].isCustomRate) {
+        cart[existingIdx].lineTotal = Math.round(cart[existingIdx].qty * cart[existingIdx].rate * 100) / 100;
+      } else if (cart[existingIdx].extraCopyRate) {
         cart[existingIdx].lineTotal = calcItemLineTotal(cart[existingIdx], cart[existingIdx].qty, cart[existingIdx].sides);
         cart[existingIdx].rate = parseFloat((cart[existingIdx].lineTotal / cart[existingIdx].qty).toFixed(2));
       } else {
-        cart[existingIdx].lineTotal = cart[existingIdx].qty * cart[existingIdx].rate;
+        cart[existingIdx].lineTotal = Math.round(cart[existingIdx].qty * cart[existingIdx].rate * 100) / 100;
       }
     } else {
-      cart.push({ id, name, type, size, qty, rate, singleRate, doubleRate, extraCopyRate, sides, lineTotal });
+      cart.push(itemObj);
     }
   }
   closeModal();
@@ -463,9 +569,9 @@ function renderCart() {
   cart.forEach((item, idx) => {
     const div = document.createElement('div');
     div.className = 'cart-item';
-    const metaDesc = item.extraCopyRate 
+    const metaDesc = (item.extraCopyRate && !item.isCustomRate) 
       ? `${item.qty} ${item.qty === 1 ? 'copy' : 'copies'} · ${item.sides}` 
-      : `${item.qty} copies × ₹${Number(item.rate).toFixed(2)} · ${item.sides}`;
+      : `${item.qty} ${item.qty === 1 ? 'copy' : 'copies'} × ₹${Number(item.rate).toFixed(2)} · ${item.sides}`;
     div.innerHTML = `
       <div class="ci-info" data-idx="${idx}">
         <span class="ci-badge ${item.type}">${item.type.toUpperCase()}</span>
@@ -510,11 +616,13 @@ function renderCart() {
       if (idx >= 0 && idx < cart.length) {
         if (cart[idx].qty > 1) {
           cart[idx].qty -= 1;
-          if (cart[idx].extraCopyRate) {
+          if (cart[idx].isCustomRate) {
+            cart[idx].lineTotal = Math.round(cart[idx].qty * cart[idx].rate * 100) / 100;
+          } else if (cart[idx].extraCopyRate) {
             cart[idx].lineTotal = calcItemLineTotal(cart[idx], cart[idx].qty, cart[idx].sides);
             cart[idx].rate = parseFloat((cart[idx].lineTotal / cart[idx].qty).toFixed(2));
           } else {
-            cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
+            cart[idx].lineTotal = Math.round(cart[idx].qty * cart[idx].rate * 100) / 100;
           }
           renderCart();
         }
@@ -529,11 +637,13 @@ function renderCart() {
       const idx = parseInt(btn.dataset.idx);
       if (idx >= 0 && idx < cart.length) {
         cart[idx].qty += 1;
-        if (cart[idx].extraCopyRate) {
+        if (cart[idx].isCustomRate) {
+          cart[idx].lineTotal = Math.round(cart[idx].qty * cart[idx].rate * 100) / 100;
+        } else if (cart[idx].extraCopyRate) {
           cart[idx].lineTotal = calcItemLineTotal(cart[idx], cart[idx].qty, cart[idx].sides);
           cart[idx].rate = parseFloat((cart[idx].lineTotal / cart[idx].qty).toFixed(2));
         } else {
-          cart[idx].lineTotal = cart[idx].qty * cart[idx].rate;
+          cart[idx].lineTotal = Math.round(cart[idx].qty * cart[idx].rate * 100) / 100;
         }
         renderCart();
       }
@@ -676,7 +786,8 @@ async function handleBillingAction(shouldPrint) {
       qty: i.qty,
       sides: i.sides,
       rate: i.rate,
-      line_total: i.lineTotal
+      line_total: i.lineTotal,
+      is_custom_rate: !!i.isCustomRate
     }))
   };
 
@@ -726,13 +837,27 @@ function resetBillingScreen() {
   cart = [];
   editingIdx = null;
   currentItemConfig = null;
+  isRateManuallyModified = false;
   document.getElementById('pmCustomer').value = '';
   document.getElementById('cDiscount').value = '0';
   document.getElementById('cPaidToggle').checked = true;
   document.getElementById('cPaid').value = '0';
+  const partRow = document.getElementById('cPartialRow');
+  const balRow = document.getElementById('cBalanceRow');
+  const badge = document.getElementById('cPaidBadge');
+  if (partRow) partRow.style.display = 'none';
+  if (balRow) balRow.style.display = 'none';
+  if (badge) {
+    badge.textContent = '✔ Paid';
+    badge.style.background = '#e8f5ee';
+    badge.style.color = '#16784b';
+  }
   renderCart();
   document.getElementById('pmCustomer').focus();
 }
+
+const clearCartBtn = document.getElementById('clearCartBtn');
+if (clearCartBtn) clearCartBtn.addEventListener('click', resetBillingScreen);
 
 document.getElementById('saveAndPrintBtn').addEventListener('click', () => handleBillingAction(true));
 document.getElementById('saveOnlyBtn').addEventListener('click', () => handleBillingAction(false));
