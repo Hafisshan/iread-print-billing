@@ -259,7 +259,8 @@ function openPaymentModal(id, billNo, total, paid, balance) {
       if (data.success && data.payments && data.payments.length > 0) {
         let html = '<table style="width:100%; margin:0; font-size:11px;">';
         data.payments.forEach(p => {
-          html += `<tr><td>${p.created_at.slice(0,16).replace('T',' ')}</td><td><strong>${fmt(p.amount)}</strong> (${p.payment_method})</td><td class="muted">${p.recorded_by}</td></tr>`;
+          const pDt = (p.created_at_ist || p.created_at || '').slice(0, 16).replace('T', ' ');
+          html += `<tr><td>${pDt}</td><td><strong>${fmt(p.amount)}</strong> (${p.payment_method})</td><td class="muted">${p.recorded_by}</td></tr>`;
         });
         html += '</table>';
         list.innerHTML = html;

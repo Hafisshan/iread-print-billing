@@ -351,7 +351,7 @@ def init_db():
                 # Seed essential paper stock if empty
                 cur.execute("SELECT COUNT(*) AS c FROM inventory")
                 if cur.fetchone()["c"] == 0:
-                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    now_iso = to_utc_iso()
                     default_papers = [
                         ('Paper', 'A4 75 GSM (JK Copier)', 'A4', 10, 500, 5000, 5000, 500, 2500.0, 'Initial JK Copier stock'),
                         ('Paper', 'Legal Paper 75 GSM', 'Legal', 5, 500, 2500, 2500, 250, 1500.0, 'Initial Legal paper stock'),
@@ -404,7 +404,7 @@ def init_db():
                 # Seed admin and staff users if missing
                 cur.execute("SELECT COUNT(*) AS c FROM users")
                 if cur.fetchone()["c"] == 0:
-                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    now_iso = to_utc_iso()
                     admin_h = generate_password_hash("iread@123", method="pbkdf2:sha256")
                     staff_h = generate_password_hash("iread@staff123", method="pbkdf2:sha256")
                     cur.execute("""
@@ -414,7 +414,7 @@ def init_db():
                     """, (admin_h, now_iso, staff_h, now_iso))
 
                 # Default app settings
-                now_s = datetime.now().isoformat(timespec="seconds")
+                now_s = to_utc_iso()
                 cur.execute("""
                 INSERT INTO app_settings (key, value, updated_at)
                 VALUES ('printer_api_key', 'iread-print-token-2026', %s)
@@ -970,10 +970,10 @@ def download_apk():
 # ── Paper & Stock Inventory Helper Functions ──
 
 def process_create_purchase(cur, data, is_admin, biller_default="Staff"):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     supplier_name = (data.get("supplier_name") or "").strip()
     bill_number = (data.get("bill_number") or "").strip()
-    purchase_date = data.get("purchase_date") or date.today().isoformat()
+    purchase_date = data.get("purchase_date") or get_ist_today_str()
     biller_name = (data.get("biller_name") or "").strip() or biller_default
     payment_method = (data.get("payment_method") or "Cash").strip()
     notes = (data.get("notes") or "").strip()
@@ -1118,8 +1118,8 @@ def get_purchase_items_breakdown(cur, purchase_id):
 
 
 def process_return_purchase_item(cur, purchase_id, purchase_item_id, return_qty, return_date=None, reason="", notes="", user_name="Admin"):
-    now = datetime.now().isoformat(timespec="seconds")
-    return_date = return_date or date.today().isoformat()
+    now = to_utc_iso()
+    return_date = return_date or get_ist_today_str()
     return_qty = int(return_qty or 0)
     if return_qty <= 0:
         raise ValueError("Return quantity must be greater than zero.")
@@ -1246,7 +1246,7 @@ def process_return_purchase_item(cur, purchase_id, purchase_item_id, return_qty,
 
 
 def process_edit_purchase(cur, purchase_id, data, user_name="Admin"):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     cur.execute("SELECT * FROM purchases WHERE id=%s AND is_deleted=0 FOR UPDATE", (purchase_id,))
     purchase = cur.fetchone()
     if not purchase:
@@ -1481,7 +1481,7 @@ def process_edit_purchase(cur, purchase_id, data, user_name="Admin"):
 
 
 def process_delete_purchase(cur, purchase_id, reason="Admin deletion", user_name="Admin"):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     cur.execute("SELECT * FROM purchases WHERE id=%s AND is_deleted=0 FOR UPDATE", (purchase_id,))
     purchase = cur.fetchone()
     if not purchase:
@@ -1542,7 +1542,7 @@ def process_delete_purchase(cur, purchase_id, reason="Admin deletion", user_name
 
 
 def process_stock_adjustment(cur, item_id, adj_type, quantity, adj_date, reason, user_name="Admin"):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     cur.execute("SELECT id, item_name, available_sheets FROM inventory WHERE id=%s FOR UPDATE", (item_id,))
     inv = cur.fetchone()
     if not inv:
@@ -1607,8 +1607,8 @@ def process_remove_inventory_item(cur, item_id, reason="Removed by Admin", stock
     linked_services = cur.fetchall()
 
     has_transactions = (purch_c > 0 or mov_c > 0 or ret_c > 0)
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    today_iso = date.today().isoformat()
+    now_iso = to_utc_iso()
+    today_iso = get_ist_today_str()
 
     if not has_transactions and len(linked_services) == 0:
         # Zero transactions and not linked to any services -> Safe permanent deletion
@@ -1646,7 +1646,7 @@ def process_reactivate_inventory_item(cur, item_id, user_name="Admin"):
     item = cur.fetchone()
     if not item:
         raise ValueError("Inventory item not found.")
-    now_iso = datetime.now().isoformat(timespec="seconds")
+    now_iso = to_utc_iso()
     cur.execute("UPDATE inventory SET is_active = 1, updated_at = %s WHERE id = %s", (now_iso, item_id))
     return f"Inventory item '{item['item_name']}' has been reactivated into active stock."
 
@@ -1663,7 +1663,7 @@ def inventory_page():
         with conn.cursor() as cur:
             if request.method == "POST":
                 action = request.form.get("action")
-                now = datetime.now().isoformat(timespec="seconds")
+                now = to_utc_iso()
 
                 # Action: Add Supplier Purchase (Supports Multi-item and Single-item)
                 if action == "add":
@@ -1692,7 +1692,7 @@ def inventory_page():
                         payload = {
                             "supplier_name": request.form.get("supplier_name", "").strip(),
                             "bill_number": request.form.get("bill_number", "").strip(),
-                            "purchase_date": request.form.get("purchase_date") or date.today().isoformat(),
+                            "purchase_date": request.form.get("purchase_date") or get_ist_today_str(),
                             "biller_name": request.form.get("biller_name", "").strip() or user_name,
                             "payment_method": request.form.get("payment_method", "Cash").strip(),
                             "paid_amount": money(request.form.get("paid_amount", 0)),
@@ -1716,7 +1716,7 @@ def inventory_page():
                         item_id = int(request.form.get("item_id"))
                         adj_type = request.form.get("adj_type", "ADD")
                         quantity = int(request.form.get("sheets_change") or request.form.get("quantity", 0))
-                        adj_date = request.form.get("adj_date") or date.today().isoformat()
+                        adj_date = request.form.get("adj_date") or get_ist_today_str()
                         reason = request.form.get("reason", "").strip()
 
                         i_name, old_bal, new_bal, change, m_type = process_stock_adjustment(
@@ -1908,10 +1908,10 @@ def maintenance_page():
                     title = request.form.get("title", "").strip()
                     machine_model = request.form.get("machine_model", "").strip()
                     amount = max(0.0, money(request.form.get("amount", 0)))
-                    expense_date = request.form.get("expense_date") or date.today().isoformat()
+                    expense_date = request.form.get("expense_date") or get_ist_today_str()
                     technician_or_vendor = request.form.get("technician_or_vendor", "").strip()
                     notes = request.form.get("notes", "").strip()
-                    created_at = datetime.now().isoformat(timespec="seconds")
+                    created_at = to_utc_iso()
 
                     if not title or amount <= 0:
                         flash("Please enter a valid description and cost amount.", "error")
@@ -1940,7 +1940,7 @@ def maintenance_page():
             total_count = len(rows)
             total_expense = sum(r.get("amount", 0.0) for r in rows)
 
-    return render_template("maintenance.html", expenses=rows, total_count=total_count, total_expense=total_expense, today=date.today().isoformat())
+    return render_template("maintenance.html", expenses=rows, total_count=total_count, total_expense=total_expense, today=get_ist_today_str())
 
 # ── Dashboard Statistics Helper ──
 def get_today_dashboard_stats(conn=None):
@@ -2602,6 +2602,10 @@ def create_bill_api():
             "success": True,
             "bill_id": bill_id,
             "bill_no": bill_no,
+            "created_at_utc": now_iso,
+            "created_at_ist": format_ist_datetime_str(now_iso),
+            "created_date_ist": format_ist_date_str(now_iso),
+            "created_time_ist": format_ist_datetime_str(now_iso, fmt="%H:%M:%S"),
             "subtotal": subtotal,
             "discount": discount,
             "total": total,
@@ -2637,7 +2641,7 @@ def api_get_print_job(job_id):
 @app.route("/api/print-jobs/<job_id>/retry", methods=["POST"])
 @token_required
 def api_retry_print_job(job_id):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id, attempts FROM print_jobs WHERE job_id=%s", (job_id,))
@@ -2659,14 +2663,15 @@ def api_retry_print_job(job_id):
 @token_required
 def api_staff_sales():
     today_str = get_ist_today_str()
+    start_utc_iso, end_utc_iso = ist_dates_to_utc_range(today_str, today_str)
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
             SELECT COUNT(*) AS count, COALESCE(SUM(total), 0) AS total_sales
             FROM bills
             WHERE is_deleted = 0 
-              AND to_char(created_at::timestamptz AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') = %s
-            """, (today_str,))
+              AND created_at >= %s AND created_at < %s
+            """, (start_utc_iso, end_utc_iso))
             row = cur.fetchone()
             today_count = int(row["count"] or 0)
             today_sales = float(row["total_sales"] or 0.0)
@@ -2684,6 +2689,8 @@ def api_staff_sales():
             for b in raw_bills:
                 b_dict = dict(b)
                 b_dict["created_at_utc"] = b_dict.get("created_at")
+                b_dict["created_at_ist"] = format_ist_datetime_str(b_dict.get("created_at"))
+                b_dict["created_date_ist"] = format_ist_date_str(b_dict.get("created_at"))
                 b_dict["created_at"] = format_ist_datetime_str(b_dict.get("created_at"))
                 bills.append(b_dict)
 
@@ -2747,7 +2754,7 @@ def api_staff_stock_add():
 
         user = getattr(request, "current_user", {})
         user_name = user.get("name") or "Staff Counter"
-        today_iso = date.today().isoformat()
+        today_iso = get_ist_today_str()
 
         with db() as conn:
             with conn.cursor() as cur:
@@ -2773,7 +2780,7 @@ def api_staff_stock_add():
 @printer_service_required
 def api_printer_heartbeat():
     data = request.get_json(silent=True) or {}
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     info = {
         "hostname": (data.get("hostname") or "Unknown").strip(),
         "os": (data.get("os") or "Unknown").strip(),
@@ -2804,7 +2811,7 @@ def api_printer_heartbeat():
 @app.route("/api/printer/pending-jobs", methods=["GET"])
 @printer_service_required
 def api_printer_pending_jobs():
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -2836,7 +2843,7 @@ def api_printer_update_job_status(job_id):
     
     error_msg = (data.get("error_message") or data.get("error") or "").strip()
     printer_name = (data.get("printer_name") or "").strip()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = to_utc_iso()
     
     with db() as conn:
         with conn.cursor() as cur:
@@ -2877,8 +2884,8 @@ def api_printer_status():
             is_online = False
             if last_seen_str:
                 try:
-                    last_seen_dt = datetime.fromisoformat(last_seen_str)
-                    if (datetime.now() - last_seen_dt).total_seconds() <= 35:
+                    last_seen_dt = to_ist_datetime(last_seen_str)
+                    if last_seen_dt and (get_ist_now() - last_seen_dt).total_seconds() <= 35:
                         is_online = True
                 except Exception:
                     pass
@@ -2916,9 +2923,9 @@ def api_printer_status():
 @app.route("/api/printer/test-print", methods=["POST"])
 @admin_api_required
 def api_printer_test_print():
-    now = datetime.now()
-    now_iso = now.isoformat(timespec="seconds")
-    job_id = f"PJ_TEST_{now.strftime('%y%m%d%H%M%S')}"
+    ist_dt = get_ist_now()
+    now_iso = to_utc_iso()
+    job_id = f"PJ_TEST_{ist_dt.strftime('%y%m%d%H%M%S')}"
     
     with db() as conn:
         with conn.cursor() as cur:
@@ -2967,7 +2974,7 @@ def api_printer_test_print():
 def printer_settings_page():
     with db() as conn:
         with conn.cursor() as cur:
-            now = datetime.now().isoformat(timespec="seconds")
+            now = to_utc_iso()
             if request.method == "POST":
                 action = request.form.get("action")
                 if action == "save_printer":
@@ -3000,7 +3007,7 @@ def printer_settings_page():
                     return redirect(url_for("printer_settings_page"))
 
                 elif action == "test_print_pc":
-                    job_id = f"PJ_TEST_{datetime.now().strftime('%y%m%d%H%M%S')}"
+                    job_id = f"PJ_TEST_{get_ist_now().strftime('%y%m%d%H%M%S')}"
                     cur.execute("SELECT value FROM app_settings WHERE key='thermal_width'")
                     w_row = cur.fetchone()
                     t_width = w_row["value"] if w_row else "80mm"
@@ -3061,8 +3068,8 @@ def printer_settings_page():
             is_online = False
             if last_seen_str:
                 try:
-                    dt = datetime.fromisoformat(last_seen_str)
-                    if (datetime.now() - dt).total_seconds() <= 35:
+                    dt = to_ist_datetime(last_seen_str)
+                    if dt and (get_ist_now() - dt).total_seconds() <= 35:
                         is_online = True
                 except Exception:
                     pass
@@ -3217,7 +3224,7 @@ def collect_bill_payment(bill_id):
         payment_method = data.get("payment_method") or "Cash"
         notes = (data.get("notes") or "").strip()
         recorded_by = "Admin" if session.get("is_admin") else "Staff"
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = to_utc_iso()
 
         if new_amount <= 0:
             return {"success": False, "error": "Payment amount must be greater than zero."}, 400
@@ -3282,6 +3289,7 @@ def get_bill_payments(bill_id):
                 for p in payments:
                     pd = dict(p)
                     pd["created_at_utc"] = pd.get("created_at")
+                    pd["created_at_ist"] = format_ist_datetime_str(pd.get("created_at"))
                     pd["created_at"] = format_ist_datetime_str(pd.get("created_at"))
                     formatted_payments.append(pd)
 
@@ -3327,6 +3335,7 @@ def get_bill_details(bill_id):
                 for p in payments:
                     pd = dict(p)
                     pd["created_at_utc"] = pd.get("created_at")
+                    pd["created_at_ist"] = format_ist_datetime_str(pd.get("created_at"))
                     pd["created_at"] = format_ist_datetime_str(pd.get("created_at"))
                     formatted_payments.append(pd)
 
@@ -3347,7 +3356,7 @@ def delete_bill(bill_id):
     try:
         data = request.get_json(silent=True) or {}
         reason = (data.get("reason") or "Deleted by admin").strip()
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = to_utc_iso()
 
         with db() as conn:
             with conn.cursor() as cur:
@@ -3407,8 +3416,25 @@ def calculate_bill_corrections(cur, bill, old_items, data):
     discount = money(data.get("discount", 0))
     other_charges = money(data.get("other_charges", 0))
     reason = (data.get("reason") or "").strip()
+    bill_date = (data.get("bill_date") or "").strip()
+    bill_time = (data.get("bill_time") or "").strip()
     new_created_at_input = (data.get("created_at") or "").strip()
-    if new_created_at_input:
+
+    orig_ist_dt = to_ist_datetime(bill.get("created_at"))
+    if bill_date:
+        if not bill_time and orig_ist_dt:
+            time_part = orig_ist_dt.strftime("%H:%M:%S")
+        elif bill_time:
+            time_part = bill_time if len(bill_time) == 8 else (f"{bill_time}:00" if len(bill_time) == 5 else bill_time)
+        else:
+            time_part = "12:00:00"
+        combined_ist_str = f"{bill_date[:10]} {time_part}"
+        try:
+            dt_ist = datetime.strptime(combined_ist_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST_TZ)
+            new_created_at = dt_ist.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            new_created_at = to_utc_iso(orig_ist_dt)
+    elif new_created_at_input:
         try:
             dt_obj = datetime.fromisoformat(new_created_at_input.replace(" ", "T"))
             if dt_obj.tzinfo is None:
@@ -3657,8 +3683,10 @@ def get_bill_edit_details(bill_id):
 
         b_dict = dict(bill)
         b_dict["created_at_utc"] = b_dict.get("created_at")
-        b_dict["created_at_ist"] = format_ist_datetime_str(b_dict.get("created_at"), "%Y-%m-%dT%H:%M")
-        b_dict["original_created_at_ist"] = format_ist_datetime_str(b_dict.get("original_created_at"), "%Y-%m-%dT%H:%M")
+        b_dict["created_at_ist"] = format_ist_datetime_str(b_dict.get("created_at"), "%Y-%m-%dT%H:%M:%S")
+        b_dict["created_date_ist"] = format_ist_date_str(b_dict.get("created_at"))
+        b_dict["created_time_ist"] = format_ist_datetime_str(b_dict.get("created_at"), "%H:%M:%S")
+        b_dict["original_created_at_ist"] = format_ist_datetime_str(b_dict.get("original_created_at"), "%Y-%m-%dT%H:%M:%S")
 
         formatted_audit_logs = []
         for a in audit_logs:
@@ -3701,8 +3729,8 @@ def edit_bill_preview(bill_id):
         orig_sheets = sum(o.get("paper_sheets", 0) for o in old_items)
         new_sheets = sum(n.get("paper_sheets", 0) for n in calc["new_items"])
 
-        orig_dt = bill["created_at"][:19].replace("T", " ")
-        new_dt = calc["new_created_at"][:19].replace("T", " ")
+        orig_dt = format_ist_datetime_str(bill["created_at"])
+        new_dt = format_ist_datetime_str(calc["new_created_at"])
 
         summary_rows = [
             {
@@ -3796,8 +3824,8 @@ def edit_bill_preview(bill_id):
 def edit_bill(bill_id):
     try:
         data = request.get_json(force=True) or {}
-        now_iso = datetime.now().isoformat(timespec="seconds")
-        today_iso = date.today().isoformat()
+        now_iso = to_utc_iso()
+        today_iso = get_ist_today_str()
         user_name = session.get("user") or "Admin"
 
         with db() as conn:
@@ -3906,6 +3934,7 @@ def edit_bill(bill_id):
                 orig_snapshot = {
                     "bill_no": bill["bill_no"],
                     "created_at": bill["created_at"],
+                    "created_at_ist": format_ist_datetime_str(bill["created_at"]),
                     "customer": bill["customer"],
                     "biller_name": bill.get("biller_name", ""),
                     "payment_method": bill["payment_method"],
@@ -3923,6 +3952,7 @@ def edit_bill(bill_id):
                 new_snapshot = {
                     "bill_no": bill["bill_no"],
                     "created_at": calc["new_created_at"],
+                    "created_at_ist": format_ist_datetime_str(calc["new_created_at"]),
                     "customer": calc["customer"],
                     "biller_name": calc["biller_name"],
                     "payment_method": calc["payment_method"],
@@ -3942,7 +3972,9 @@ def edit_bill(bill_id):
 
                 audit_details = f"Bill {bill['bill_no']} edited by {user_name}. Reason: {calc['reason']}. Total: ₹{bill['total']} -> ₹{calc['total']}."
                 if (calc["new_created_at"] or "")[:19] != (bill["created_at"] or "")[:19]:
-                    audit_details += f" Date: {bill['created_at'][:19]} -> {calc['new_created_at'][:19]}."
+                    orig_ist_disp = format_ist_datetime_str(bill["created_at"])
+                    new_ist_disp = format_ist_datetime_str(calc["new_created_at"])
+                    audit_details += f" Date: {orig_ist_disp} -> {new_ist_disp}."
 
                 cur.execute("""
                     INSERT INTO bill_audit_log (
@@ -3965,6 +3997,95 @@ def edit_bill(bill_id):
             "success": True,
             "message": f"Bill {bill['bill_no']} successfully updated and stock reconciled.",
             "bill_no": bill["bill_no"]
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 400
+
+
+# ── API: Edit Bill Date Only (Admin only, preserves items, stock & payments) ──
+@app.post("/api/bills/<int:bill_id>/edit-date")
+@admin_api_required
+def edit_bill_date_api(bill_id):
+    try:
+        data = request.get_json(force=True) or {}
+        new_date = (data.get("bill_date") or data.get("date") or "").strip()
+        new_time = (data.get("bill_time") or data.get("time") or "").strip()
+        reason = (data.get("reason") or "Bill date correction by admin").strip()
+        user_name = session.get("user") or getattr(request, "current_user", {}).get("name") or "Admin"
+        now_iso = to_utc_iso()
+
+        if not new_date:
+            return {"success": False, "error": "New bill date is required (YYYY-MM-DD)."}, 400
+
+        try:
+            datetime.strptime(new_date[:10], "%Y-%m-%d")
+        except ValueError:
+            return {"success": False, "error": "Invalid date format. Expected YYYY-MM-DD."}, 400
+
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM bills WHERE id=%s AND is_deleted=0 FOR UPDATE", (bill_id,))
+                bill = cur.fetchone()
+                if not bill:
+                    return {"success": False, "error": "Bill not found or deleted."}, 404
+
+                orig_created_at = bill["created_at"]
+                orig_ist_dt = to_ist_datetime(orig_created_at)
+                orig_ist_str = format_ist_datetime_str(orig_created_at)
+                orig_date_ist = format_ist_date_str(orig_created_at)
+
+                # Preserve original IST time of day if only date is passed
+                if not new_time and orig_ist_dt:
+                    time_part = orig_ist_dt.strftime("%H:%M:%S")
+                elif new_time:
+                    clean_time = new_time.strip()
+                    time_part = clean_time if len(clean_time) == 8 else (f"{clean_time}:00" if len(clean_time) == 5 else clean_time)
+                else:
+                    time_part = "12:00:00"
+
+                combined_ist_str = f"{new_date[:10]} {time_part}"
+                new_ist_dt = datetime.strptime(combined_ist_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST_TZ)
+                new_created_at_utc = new_ist_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                new_ist_str = format_ist_datetime_str(new_created_at_utc)
+                new_date_ist = format_ist_date_str(new_created_at_utc)
+
+                orig_master_created_at = bill.get("original_created_at") or orig_created_at
+
+                # Update only bills.created_at and original_created_at
+                cur.execute("""
+                    UPDATE bills
+                    SET created_at = %s,
+                        original_created_at = %s
+                    WHERE id = %s
+                """, (new_created_at_utc, orig_master_created_at, bill_id))
+
+                # Audit log entry with action 'DATE_EDIT'
+                audit_details = f"Bill {bill['bill_no']} date corrected from {orig_ist_str} to {new_ist_str} by {user_name}. Reason: {reason}"
+                cur.execute("""
+                    INSERT INTO bill_audit_log (
+                        bill_id, bill_no, action, performed_by, details, created_at,
+                        original_values, updated_values, fields_changed, reason, original_created_at
+                    )
+                    VALUES (%s, %s, 'DATE_EDIT', %s, %s, %s, %s, %s, 'date', %s, %s)
+                """, (
+                    bill["id"], bill["bill_no"], user_name, audit_details, now_iso,
+                    json.dumps({"created_at": orig_created_at, "created_at_ist": orig_ist_str, "date_ist": orig_date_ist}),
+                    json.dumps({"created_at": new_created_at_utc, "created_at_ist": new_ist_str, "date_ist": new_date_ist}),
+                    reason,
+                    orig_master_created_at
+                ))
+
+            conn.commit()
+
+        return {
+            "success": True,
+            "message": f"Bill {bill['bill_no']} date successfully corrected to {new_ist_str}.",
+            "bill_id": bill["id"],
+            "bill_no": bill["bill_no"],
+            "previous_created_at_utc": orig_created_at,
+            "previous_created_at_ist": orig_ist_str,
+            "new_created_at_utc": new_created_at_utc,
+            "new_created_at_ist": new_ist_str
         }
     except Exception as e:
         return {"success": False, "error": str(e)}, 400
@@ -4022,10 +4143,10 @@ def pay_supplier_purchase(purchase_id):
         data = request.get_json(force=True) or {}
         new_amount = money(data.get("amount", 0))
         payment_method = data.get("payment_method") or "Cash"
-        payment_date = data.get("payment_date") or date.today().isoformat()
+        payment_date = data.get("payment_date") or get_ist_today_str()
         notes = (data.get("notes") or "").strip()
         recorded_by = "Admin"
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = to_utc_iso()
 
         if new_amount <= 0:
             return {"success": False, "error": "Payment amount must be greater than zero."}, 400
@@ -4168,7 +4289,7 @@ def api_return_purchase_item(purchase_id):
         data = request.get_json(force=True) if request.is_json else request.form.to_dict()
         purchase_item_id = int(data.get("purchase_item_id") or 0)
         return_qty = int(data.get("return_quantity") or data.get("quantity") or 0)
-        return_date = data.get("return_date") or date.today().isoformat()
+        return_date = data.get("return_date") or get_ist_today_str()
         reason = (data.get("reason") or "Returned unsold paper stock to supplier").strip()
         notes = (data.get("notes") or "").strip()
         user_name = "Admin"
@@ -4245,7 +4366,7 @@ def api_audit_double_sided():
 def api_reconcile_double_sided():
     try:
         user_name = "Admin"
-        now = datetime.now().isoformat(timespec="seconds")
+        now = to_utc_iso()
         reconciled_items = 0
         reconciled_sheets = 0
 
@@ -4400,7 +4521,7 @@ def api_adjust_inventory():
         item_id = int(data.get("item_id"))
         adj_type = data.get("adj_type")
         quantity = int(data.get("sheets_change") or data.get("quantity", 0))
-        adj_date = data.get("adj_date") or date.today().isoformat()
+        adj_date = data.get("adj_date") or get_ist_today_str()
         reason = (data.get("reason") or "").strip()
         user_name = "Admin"
 
@@ -5083,7 +5204,7 @@ def services():
                                 updated_count += 1
 
                                 if sid == 52 or ("print b&w" in clean_name.lower() and "a4" in clean_name.lower()):
-                                    now_ts = datetime.now().isoformat(timespec="seconds")
+                                    now_ts = to_utc_iso()
                                     cur.execute("""
                                         INSERT INTO app_settings (key, value, updated_at)
                                         VALUES 
@@ -5170,7 +5291,13 @@ def export_csv():
             query += " ORDER BY id DESC"
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
-            writer.writerows([tuple(r.values()) for r in rows])
+            formatted_rows = []
+            for r in rows:
+                r_vals = list(r.values())
+                if len(r_vals) > 1 and r_vals[1]:
+                    r_vals[1] = format_ist_datetime_str(r_vals[1])
+                formatted_rows.append(r_vals)
+            writer.writerows(formatted_rows)
     response = make_response(output.getvalue())
     response.headers["Content-Type"] = "text/csv; charset=utf-8"
     response.headers["Content-Disposition"] = "attachment; filename=iread_bills.csv"

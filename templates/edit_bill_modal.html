@@ -19,8 +19,12 @@
       <!-- Top Metadata Grid -->
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; margin-bottom:14px; background:#faf8fc; padding:12px; border-radius:10px; border:1px solid var(--line);">
         <div>
-          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Bill Date &amp; Time *</label>
-          <input type="datetime-local" id="editDateTime" required style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Bill Date (IST) *</label>
+          <input type="date" id="editBillDate" required style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Bill Time (IST)</label>
+          <input type="time" id="editBillTime" step="1" style="width:100%; padding:7px 9px; border:1.5px solid var(--line); border-radius:7px; font-size:13px; font-weight:600;">
         </div>
         <div>
           <label style="display:block; font-size:11px; font-weight:700; margin-bottom:4px; text-transform:uppercase; color:var(--muted);">Customer Name</label>
@@ -230,12 +234,15 @@ async function openEditBillModal(billId) {
     const origDt = editCurrentBill.original_created_at_ist || editCurrentBill.created_at_ist || editCurrentBill.original_created_at || editCurrentBill.created_at || '';
     document.getElementById('editOrigDateDisplay').textContent = origDt.slice(0, 19).replace('T', ' ');
 
-    // Format datetime-local string (YYYY-MM-DDTHH:MM in IST)
-    let dtVal = editCurrentBill.created_at_ist || editCurrentBill.created_at || '';
-    if (dtVal.length >= 16) {
-      dtVal = dtVal.slice(0, 16);
+    // Populate separate Date and Time inputs in IST
+    const dateVal = editCurrentBill.created_date_ist || (origDt ? origDt.slice(0, 10) : '');
+    let timeVal = editCurrentBill.created_time_ist || '';
+    if (!timeVal && origDt && origDt.length >= 16) {
+      timeVal = origDt.slice(11, 19).replace('T', '');
+      if (timeVal.length > 5) timeVal = timeVal.slice(0, 5);
     }
-    document.getElementById('editDateTime').value = dtVal;
+    document.getElementById('editBillDate').value = dateVal;
+    document.getElementById('editBillTime').value = timeVal;
     document.getElementById('editCustomer').value = editCurrentBill.customer || '';
     document.getElementById('editBillerName').value = editCurrentBill.biller_name || '';
     document.getElementById('editPaymentMethod').value = editCurrentBill.payment_method || 'Cash';
@@ -449,7 +456,9 @@ function recalcEditTotals() {
 
 function collectEditPayload() {
   const billId = document.getElementById('editBillId').value;
-  const dtVal = document.getElementById('editDateTime').value;
+  const billDate = document.getElementById('editBillDate').value;
+  const billTime = document.getElementById('editBillTime').value;
+  const dtVal = billTime ? `${billDate}T${billTime}` : billDate;
   const customer = document.getElementById('editCustomer').value.trim();
   const biller_name = document.getElementById('editBillerName').value.trim();
   const payment_method = document.getElementById('editPaymentMethod').value;
@@ -489,6 +498,8 @@ function collectEditPayload() {
 
   return {
     bill_id: billId,
+    bill_date: billDate,
+    bill_time: billTime,
     created_at: dtVal,
     customer: customer,
     biller_name: biller_name,
@@ -503,6 +514,12 @@ function collectEditPayload() {
 async function handleReviewClick(e) {
   e.preventDefault();
   const payload = collectEditPayload();
+
+  if (!payload.bill_date) {
+    alert("Please select a valid Bill Date.");
+    document.getElementById('editBillDate').focus();
+    return;
+  }
 
   if (!payload.reason) {
     alert("Please enter a reason for this correction.");
@@ -699,14 +716,16 @@ async function openAuditHistoryModal(billId) {
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
               <div>
                 <span style="font-size:10px; text-transform:uppercase; color:var(--muted); font-weight:700; display:block;">Original Snapshot</span>
-                <div>Total: <strong>${fmt(origVals.total)}</strong> · Paid: ${fmt(origVals.paid)}</div>
-                <div>Status: <strong>${escapeHtml(origVals.payment_status || '-')}</strong></div>
+                ${origVals.created_at_ist ? `<div>Date: <strong>${escapeHtml(origVals.created_at_ist)}</strong></div>` : ''}
+                ${origVals.total !== undefined ? `<div>Total: <strong>${fmt(origVals.total)}</strong> · Paid: ${fmt(origVals.paid)}</div>` : ''}
+                ${origVals.payment_status ? `<div>Status: <strong>${escapeHtml(origVals.payment_status || '-')}</strong></div>` : ''}
                 ${origVals.items ? `<div class="muted" style="font-size:11px;">${origVals.items.length} item(s)</div>` : ''}
               </div>
               <div>
                 <span style="font-size:10px; text-transform:uppercase; color:var(--muted); font-weight:700; display:block;">Corrected Snapshot</span>
-                <div>Total: <strong style="color:var(--accent);">${fmt(newVals.total)}</strong> · Paid: ${fmt(newVals.paid)}</div>
-                <div>Status: <strong>${escapeHtml(newVals.payment_status || '-')}</strong></div>
+                ${newVals.created_at_ist ? `<div>Date: <strong style="color:var(--accent);">${escapeHtml(newVals.created_at_ist)}</strong></div>` : ''}
+                ${newVals.total !== undefined ? `<div>Total: <strong style="color:var(--accent);">${fmt(newVals.total)}</strong> · Paid: ${fmt(newVals.paid)}</div>` : ''}
+                ${newVals.payment_status ? `<div>Status: <strong>${escapeHtml(newVals.payment_status || '-')}</strong></div>` : ''}
                 ${newVals.excess_amount > 0 ? `<div style="color:#b84a00; font-weight:700; font-size:11px;">Excess Paid: ${fmt(newVals.excess_amount)}</div>` : ''}
                 ${newVals.items ? `<div class="muted" style="font-size:11px;">${newVals.items.length} item(s)</div>` : ''}
               </div>
