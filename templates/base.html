@@ -9,6 +9,42 @@
 <meta name="theme-color" content="#780431">
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.svg') }}">
+<script>
+  window.__AUTH_TOKEN__ = "{{ session.get('auth_token', '') }}";
+  window.__USER_ROLE__ = "{{ session.get('role', '') }}";
+  window.__USER_NAME__ = "{{ session.get('name', '') or session.get('username', '') }}";
+  if (window.__AUTH_TOKEN__) {
+    try { localStorage.setItem('iread_token', window.__AUTH_TOKEN__); } catch(e) {}
+  }
+
+  // Universal fetch credentials & token interceptor
+  (function() {
+    const _origFetch = window.fetch;
+    window.fetch = function(resource, init) {
+      init = init || {};
+      if (!init.credentials) {
+        init.credentials = 'same-origin';
+      }
+      const token = window.__AUTH_TOKEN__ || (typeof localStorage !== 'undefined' && localStorage.getItem('iread_token'));
+      if (token) {
+        if (!init.headers) {
+          init.headers = {};
+        }
+        if (init.headers instanceof Headers) {
+          if (!init.headers.has('Authorization')) init.headers.set('Authorization', 'Bearer ' + token);
+          if (!init.headers.has('X-Auth-Token')) init.headers.set('X-Auth-Token', token);
+        } else if (Array.isArray(init.headers)) {
+          init.headers.push(['Authorization', 'Bearer ' + token]);
+          init.headers.push(['X-Auth-Token', token]);
+        } else {
+          if (!init.headers['Authorization']) init.headers['Authorization'] = 'Bearer ' + token;
+          if (!init.headers['X-Auth-Token']) init.headers['X-Auth-Token'] = token;
+        }
+      }
+      return _origFetch.call(this, resource, init);
+    };
+  })();
+</script>
 </head>
 <body>
 <header class="topbar">
@@ -29,8 +65,11 @@
       <a href="{{ url_for('services') }}">Price List &amp; Items</a>
       <a href="{{ url_for('printer_settings_page') }}">🖨 Printer</a>
       <a href="{{ url_for('logout') }}" style="color: #9a214b;">Logout (Admin)</a>
+    {% elif session.get('username') or session.get('user') %}
+      <span style="font-size:12px; color:var(--muted); font-weight:600; padding:4px 8px; background:#f4eef3; border-radius:6px;">👤 {{ session.get('name') or session.get('username') or 'Staff' }}</span>
+      <a href="{{ url_for('logout') }}" style="color: #9a214b;">Logout</a>
     {% else %}
-      <a href="{{ url_for('login') }}" class="nav-admin-link">🔒 Admin</a>
+      <a href="{{ url_for('login') }}" class="nav-admin-link">🔒 Login</a>
     {% endif %}
   </nav>
 </header>
@@ -45,8 +84,10 @@
   &nbsp;|&nbsp;
   {% if session.get('is_admin') %}
     Logged in as Admin &bull; <a href="{{ url_for('logout') }}" style="color: inherit;">Sign out</a>
+  {% elif session.get('username') or session.get('user') %}
+    Logged in as {{ session.get('name') or session.get('username') or 'Staff' }} &bull; <a href="{{ url_for('logout') }}" style="color: inherit;">Sign out</a>
   {% else %}
-    <a href="{{ url_for('login') }}" style="color: inherit;">Admin Login</a>
+    <a href="{{ url_for('login') }}" style="color: inherit;">Staff / Admin Login</a>
   {% endif %}
 </footer>
 

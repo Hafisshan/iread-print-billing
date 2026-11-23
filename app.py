@@ -24,6 +24,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "iread@123")
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 APP_DIR = Path(__file__).resolve().parent
 app = Flask(
     __name__,
@@ -32,6 +34,18 @@ app = Flask(
 )
 app.secret_key = os.environ.get("SECRET_KEY", "iread-print-billing-secret-key-2026")
 app.debug = False
+
+# Reverse proxy support for Vercel / HTTPS headers
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
+
+# Persistent, robust session cookie configuration
+app.config.update(
+    SESSION_COOKIE_NAME="iread_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_PATH="/",
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
 
 # Unified Single & Double Sided services list
 DEFAULT_SERVICES = [
@@ -696,10 +710,27 @@ def token_required(f):
         
         user_data = verify_auth_token(token)
         if not user_data:
+            # Check Flask session for active web users (Admin or Staff)
             if session.get("is_admin"):
-                user_data = {"uid": 1, "username": "admin", "role": "admin", "name": "Admin"}
-            else:
-                return jsonify({"success": False, "error": "Authentication required. Please log in."}), 401
+                user_data = {
+                    "uid": session.get("user_id", 1),
+                    "username": session.get("username") or session.get("user") or "admin",
+                    "role": "admin",
+                    "name": session.get("name") or "Admin"
+                }
+            elif session.get("username") or session.get("user"):
+                u_name = session.get("username") or session.get("user")
+                user_data = {
+                    "uid": session.get("user_id", 2),
+                    "username": u_name,
+                    "role": session.get("role", "staff"),
+                    "name": session.get("name") or (u_name.title() if u_name else "Staff Counter")
+                }
+            elif session.get("auth_token"):
+                user_data = verify_auth_token(session.get("auth_token"))
+
+        if not user_data:
+            return jsonify({"success": False, "error": "Authentication required. Please log in."}), 401
         
         request.current_user = user_data
         return f(*args, **kwargs)
@@ -718,9 +749,25 @@ def admin_api_required(f):
         user_data = verify_auth_token(token)
         if not user_data:
             if session.get("is_admin"):
-                user_data = {"uid": 1, "username": "admin", "role": "admin", "name": "Admin"}
-            else:
-                return jsonify({"success": False, "error": "Admin authentication required."}), 401
+                user_data = {
+                    "uid": session.get("user_id", 1),
+                    "username": session.get("username") or session.get("user") or "admin",
+                    "role": "admin",
+                    "name": session.get("name") or "Admin"
+                }
+            elif session.get("username") or session.get("user"):
+                u_name = session.get("username") or session.get("user")
+                user_data = {
+                    "uid": session.get("user_id", 2),
+                    "username": u_name,
+                    "role": session.get("role", "staff"),
+                    "name": session.get("name") or (u_name.title() if u_name else "Staff Counter")
+                }
+            elif session.get("auth_token"):
+                user_data = verify_auth_token(session.get("auth_token"))
+
+        if not user_data:
+            return jsonify({"success": False, "error": "Admin authentication required. Please log in."}), 401
         
         if user_data.get("role") != "admin":
             return jsonify({"success": False, "error": "Access denied. Admin privileges required."}), 403
@@ -858,20 +905,34 @@ def login():
             pass
 
         if user_row and check_password_hash(user_row["password_hash"], password):
+            session.permanent = True
+            session["user_id"] = user_row["id"]
+            session["username"] = user_row["username"]
+            session["user"] = user_row["username"]
+            session["role"] = user_row["role"]
+            session["name"] = user_row["name"]
+            session["is_admin"] = (user_row["role"] == "admin")
+            token = generate_auth_token(user_row["id"], user_row["username"], user_row["role"], user_row["name"])
+            session["auth_token"] = token
+
             if user_row["role"] == "admin":
-                session["is_admin"] = True
-                session["username"] = user_row["username"]
                 flash("Welcome back, Admin!", "success")
                 next_url = request.args.get("next") or url_for("reports")
                 return redirect(next_url)
             else:
-                session["is_admin"] = False
-                session["username"] = user_row["username"]
-                flash(f"Logged in as {user_row['name']}. Note: Full billing is also available on the Android Mobile App.", "info")
-                return redirect(url_for("index"))
+                flash(f"Logged in as {user_row['name']}.", "success")
+                next_url = request.args.get("next") or url_for("index")
+                return redirect(next_url)
         elif username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            session["is_admin"] = True
+            session.permanent = True
+            session["user_id"] = 1
             session["username"] = ADMIN_USERNAME
+            session["user"] = ADMIN_USERNAME
+            session["role"] = "admin"
+            session["name"] = "Admin"
+            session["is_admin"] = True
+            token = generate_auth_token(1, ADMIN_USERNAME, "admin", "Admin")
+            session["auth_token"] = token
             flash("Welcome back, Admin!", "success")
             next_url = request.args.get("next") or url_for("reports")
             return redirect(next_url)
@@ -881,8 +942,7 @@ def login():
 
 @app.route("/logout")
 def logout():
-    session.pop("is_admin", None)
-    session.pop("username", None)
+    session.clear()
     flash("Logged out successfully.", "success")
     return redirect(url_for("index"))
 
@@ -929,6 +989,17 @@ def api_auth_login():
         
     clear_login_failures(rate_limit_key)
     token = generate_auth_token(user["id"], user["username"], user["role"], user["name"])
+    
+    # Establish session alongside token for seamless web/mobile parity
+    session.permanent = True
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    session["user"] = user["username"]
+    session["role"] = user["role"]
+    session["name"] = user["name"]
+    session["is_admin"] = (user["role"] == "admin")
+    session["auth_token"] = token
+
     return jsonify({
         "success": True,
         "token": token,

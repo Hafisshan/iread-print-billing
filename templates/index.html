@@ -794,14 +794,39 @@ async function handleBillingAction(shouldPrint) {
   };
 
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = window.__AUTH_TOKEN__ || (typeof localStorage !== 'undefined' && localStorage.getItem('iread_token'));
+    if (token) {
+      headers['Authorization'] = 'Bearer ' + token;
+      headers['X-Auth-Token'] = token;
+    }
+
     const res = await fetch('{{ url_for("create_bill_api") }}', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
+      credentials: 'same-origin',
       body: JSON.stringify(payload)
     });
 
     const data = await res.json();
     if (!res.ok || !data.success) {
+      if (res.status === 401) {
+        try {
+          localStorage.setItem('iread_cart_backup', JSON.stringify({
+            cart: cart,
+            customer: document.getElementById('pmCustomer').value.trim(),
+            payment_method: document.getElementById('pmMethod').value,
+            discount: discount,
+            paid: paid,
+            saved_at: Date.now()
+          }));
+        } catch(e) {}
+        showToast('⚠️ Session expired or login required. Redirecting to login...', true);
+        setTimeout(() => {
+          window.location.href = "{{ url_for('login') }}?next=" + encodeURIComponent(window.location.pathname);
+        }, 1500);
+        return;
+      }
       throw new Error(data.error || 'Failed to save bill');
     }
 
@@ -895,5 +920,28 @@ window.addEventListener('focus', fetchDashboardStats);
 function fmt(n) {
   return '₹' + Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
+
+// Restore unsaved cart after session re-login
+(function() {
+  try {
+    const backupStr = localStorage.getItem('iread_cart_backup');
+    if (backupStr) {
+      const bData = JSON.parse(backupStr);
+      if (bData && bData.cart && bData.cart.length > 0 && (Date.now() - (bData.saved_at || 0) < 3600000)) {
+        if (cart.length === 0) {
+          cart = bData.cart;
+          if (bData.customer) document.getElementById('pmCustomer').value = bData.customer;
+          if (bData.payment_method) document.getElementById('pmMethod').value = bData.payment_method;
+          if (bData.discount) document.getElementById('cDiscount').value = bData.discount;
+          renderCart();
+          showToast('✓ Restored your unsaved bill from previous session.');
+          localStorage.removeItem('iread_cart_backup');
+        }
+      } else {
+        localStorage.removeItem('iread_cart_backup');
+      }
+    }
+  } catch(e) {}
+})();
 </script>
 {% endblock %}
