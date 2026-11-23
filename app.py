@@ -710,27 +710,19 @@ def token_required(f):
         
         user_data = verify_auth_token(token)
         if not user_data:
-            # Check Flask session for active web users (Admin or Staff)
+            # Check Flask session for active Admin web session
             if session.get("is_admin"):
                 user_data = {
                     "uid": session.get("user_id", 1),
-                    "username": session.get("username") or session.get("user") or "admin",
+                    "username": session.get("username") or "admin",
                     "role": "admin",
                     "name": session.get("name") or "Admin"
-                }
-            elif session.get("username") or session.get("user"):
-                u_name = session.get("username") or session.get("user")
-                user_data = {
-                    "uid": session.get("user_id", 2),
-                    "username": u_name,
-                    "role": session.get("role", "staff"),
-                    "name": session.get("name") or (u_name.title() if u_name else "Staff Counter")
                 }
             elif session.get("auth_token"):
                 user_data = verify_auth_token(session.get("auth_token"))
 
         if not user_data:
-            return jsonify({"success": False, "error": "Authentication required. Please log in."}), 401
+            return jsonify({"success": False, "error": "Admin authentication required. Please log in."}), 401
         
         request.current_user = user_data
         return f(*args, **kwargs)
@@ -751,17 +743,9 @@ def admin_api_required(f):
             if session.get("is_admin"):
                 user_data = {
                     "uid": session.get("user_id", 1),
-                    "username": session.get("username") or session.get("user") or "admin",
+                    "username": session.get("username") or "admin",
                     "role": "admin",
                     "name": session.get("name") or "Admin"
-                }
-            elif session.get("username") or session.get("user"):
-                u_name = session.get("username") or session.get("user")
-                user_data = {
-                    "uid": session.get("user_id", 2),
-                    "username": u_name,
-                    "role": session.get("role", "staff"),
-                    "name": session.get("name") or (u_name.title() if u_name else "Staff Counter")
                 }
             elif session.get("auth_token"):
                 user_data = verify_auth_token(session.get("auth_token"))
@@ -904,37 +888,34 @@ def login():
         except Exception:
             pass
 
-        if user_row and check_password_hash(user_row["password_hash"], password):
-            session.permanent = True
-            session["user_id"] = user_row["id"]
-            session["username"] = user_row["username"]
-            session["user"] = user_row["username"]
-            session["role"] = user_row["role"]
-            session["name"] = user_row["name"]
-            session["is_admin"] = (user_row["role"] == "admin")
-            token = generate_auth_token(user_row["id"], user_row["username"], user_row["role"], user_row["name"])
-            session["auth_token"] = token
+        authenticated = False
+        user_id = 1
+        u_name = "admin"
+        display_name = "Admin"
 
-            if user_row["role"] == "admin":
-                flash("Welcome back, Admin!", "success")
-                next_url = request.args.get("next") or url_for("reports")
-                return redirect(next_url)
-            else:
-                flash(f"Logged in as {user_row['name']}.", "success")
-                next_url = request.args.get("next") or url_for("index")
-                return redirect(next_url)
+        if user_row and check_password_hash(user_row["password_hash"], password):
+            authenticated = True
+            user_id = user_row["id"]
+            u_name = user_row["username"]
+            display_name = user_row.get("name") or "Admin"
         elif username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            authenticated = True
+            user_id = 1
+            u_name = ADMIN_USERNAME
+            display_name = "Admin"
+
+        if authenticated:
             session.permanent = True
-            session["user_id"] = 1
-            session["username"] = ADMIN_USERNAME
-            session["user"] = ADMIN_USERNAME
+            session["user_id"] = user_id
+            session["username"] = u_name
+            session["user"] = u_name
             session["role"] = "admin"
-            session["name"] = "Admin"
+            session["name"] = display_name
             session["is_admin"] = True
-            token = generate_auth_token(1, ADMIN_USERNAME, "admin", "Admin")
+            token = generate_auth_token(user_id, u_name, "admin", display_name)
             session["auth_token"] = token
-            flash("Welcome back, Admin!", "success")
-            next_url = request.args.get("next") or url_for("reports")
+            flash(f"Welcome back, {display_name}!", "success")
+            next_url = request.args.get("next") or url_for("index")
             return redirect(next_url)
         else:
             flash("Invalid username or password.", "error")
@@ -983,31 +964,50 @@ def api_auth_login():
             cur.execute("SELECT * FROM users WHERE username=%s AND is_active=1", (username,))
             user = cur.fetchone()
             
-    if not user or not check_password_hash(user["password_hash"], password):
+    authenticated = False
+    auth_user = None
+    if user and check_password_hash(user["password_hash"], password):
+        authenticated = True
+        auth_user = {
+            "id": user["id"],
+            "username": user["username"],
+            "role": "admin",
+            "name": user.get("name") or "Admin"
+        }
+    elif username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        authenticated = True
+        auth_user = {
+            "id": 1,
+            "username": ADMIN_USERNAME,
+            "role": "admin",
+            "name": "Admin"
+        }
+
+    if not authenticated or not auth_user:
         record_login_failure(rate_limit_key)
         return jsonify({"success": False, "error": "Invalid username or password."}), 401
         
     clear_login_failures(rate_limit_key)
-    token = generate_auth_token(user["id"], user["username"], user["role"], user["name"])
+    token = generate_auth_token(auth_user["id"], auth_user["username"], "admin", auth_user["name"])
     
     # Establish session alongside token for seamless web/mobile parity
     session.permanent = True
-    session["user_id"] = user["id"]
-    session["username"] = user["username"]
-    session["user"] = user["username"]
-    session["role"] = user["role"]
-    session["name"] = user["name"]
-    session["is_admin"] = (user["role"] == "admin")
+    session["user_id"] = auth_user["id"]
+    session["username"] = auth_user["username"]
+    session["user"] = auth_user["username"]
+    session["role"] = "admin"
+    session["name"] = auth_user["name"]
+    session["is_admin"] = True
     session["auth_token"] = token
 
     return jsonify({
         "success": True,
         "token": token,
         "user": {
-            "id": user["id"],
-            "username": user["username"],
-            "role": user["role"],
-            "name": user["name"]
+            "id": auth_user["id"],
+            "username": auth_user["username"],
+            "role": "admin",
+            "name": auth_user["name"]
         }
     })
 
@@ -2313,7 +2313,7 @@ def api_get_services():
 def create_bill_api():
     try:
         user_data = getattr(request, "current_user", {})
-        user_name = user_data.get("name") or ("Admin" if session.get("is_admin") else "Staff")
+        user_name = user_data.get("name") or "Admin"
         
         data = request.get_json(force=True) or {}
         client_tx_id = (data.get("client_tx_id") or "").strip()

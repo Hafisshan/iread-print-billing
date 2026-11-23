@@ -821,7 +821,7 @@ async function handleBillingAction(shouldPrint) {
             saved_at: Date.now()
           }));
         } catch(e) {}
-        showToast('⚠️ Session expired or login required. Redirecting to login...', true);
+        showToast('⚠️ Admin login required to save bill. Redirecting...', true);
         setTimeout(() => {
           window.location.href = "{{ url_for('login') }}?next=" + encodeURIComponent(window.location.pathname);
         }, 1500);
