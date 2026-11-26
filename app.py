@@ -1831,54 +1831,30 @@ def inventory_page():
 
                 return redirect(url_for("inventory_page"))
 
-            # Fetch inventory counts
-            cur.execute("""
-            SELECT COUNT(*) AS total_count,
-                   COUNT(CASE WHEN is_active = 1 THEN 1 END) AS active_count,
-                   COUNT(CASE WHEN is_active = 0 THEN 1 END) AS archived_count
-            FROM inventory
-            """)
-            counts = cur.fetchone()
-            active_count = counts["active_count"]
-            archived_count = counts["archived_count"]
-            total_count = counts["total_count"]
-
+            # Single consolidated inventory fetch (1 query replaces counts + items + active_items)
             status_filter = request.args.get("status", "active").strip()
-            inv_query = """
+            cur.execute("""
             SELECT id, category, item_name, size_spec, bundles, sheets_per_bundle, total_sheets, available_sheets, reorder_level, cost, notes, updated_at, is_active,
                    ROUND((cost / NULLIF(total_sheets, 0))::numeric, 3) AS cost_per_sheet
             FROM inventory 
-            """
-            if status_filter == "archived":
-                inv_query += " WHERE is_active = 0"
-            elif status_filter == "all":
-                pass
-            else:
-                status_filter = "active"
-                inv_query += " WHERE is_active = 1"
-
-            inv_query += " ORDER BY is_active DESC, category, item_name"
-            cur.execute(inv_query)
-            items = cur.fetchall()
-            for r in items:
+            ORDER BY is_active DESC, category, item_name
+            """)
+            all_inventory = cur.fetchall()
+            for r in all_inventory:
                 r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
 
-            # Active items for metrics and datalist (reuse items if already active to save remote roundtrip)
-            if status_filter == "active":
-                active_items = items
+            total_count = len(all_inventory)
+            active_items = [r for r in all_inventory if r.get('is_active') == 1]
+            active_count = len(active_items)
+            archived_count = total_count - active_count
+
+            if status_filter == "archived":
+                items = [r for r in all_inventory if r.get('is_active') == 0]
             elif status_filter == "all":
-                active_items = [r for r in items if r.get('is_active') == 1]
+                items = all_inventory
             else:
-                cur.execute("""
-                SELECT id, category, item_name, size_spec, available_sheets, reorder_level, is_active,
-                       ROUND((cost / NULLIF(total_sheets, 0))::numeric, 3) AS cost_per_sheet
-                FROM inventory 
-                WHERE is_active = 1
-                ORDER BY category, item_name
-                """)
-                active_items = cur.fetchall()
-                for r in active_items:
-                    r['cost_per_sheet'] = float(r['cost_per_sheet'] or 0.0)
+                status_filter = "active"
+                items = active_items
 
             total_items = len(active_items)
             total_available_sheets = sum(row.get("available_sheets", 0) for row in active_items)
@@ -1930,18 +1906,28 @@ def inventory_page():
                 p["items"] = p_items
                 p["items_count"] = len(p_items)
 
-            # Supplier purchase stats for active invoices
-            cur.execute("""
-            SELECT COALESCE(SUM(total_amount), 0) AS total_purchases,
-                   COALESCE(SUM(returned_amount), 0) AS total_returned_amount,
-                   COALESCE(SUM(paid_amount), 0) AS total_paid_supplier,
-                   COALESCE(SUM(balance_amount), 0) AS total_supplier_balance,
-                   COALESCE(SUM(supplier_credit), 0) AS total_supplier_credit,
-                   COUNT(CASE WHEN balance_amount > 0.001 THEN 1 END) AS pending_purchases_count
-            FROM purchases
-            WHERE is_deleted = 0
-            """)
-            purchase_stats = cur.fetchone()
+            # Supplier purchase stats for active invoices (calculated in Python when unmuted to eliminate redundant round-trip)
+            if not p_bill and not p_biller and not p_date and len(purchases) < 100:
+                purchase_stats = {
+                    "total_purchases": sum(float(p.get("total_amount") or 0.0) for p in purchases),
+                    "total_returned_amount": sum(float(p.get("returned_amount") or 0.0) for p in purchases),
+                    "total_paid_supplier": sum(float(p.get("paid_amount") or 0.0) for p in purchases),
+                    "total_supplier_balance": sum(float(p.get("balance_amount") or 0.0) for p in purchases),
+                    "total_supplier_credit": sum(float(p.get("supplier_credit") or 0.0) for p in purchases),
+                    "pending_purchases_count": sum(1 for p in purchases if float(p.get("balance_amount") or 0.0) > 0.001)
+                }
+            else:
+                cur.execute("""
+                SELECT COALESCE(SUM(total_amount), 0) AS total_purchases,
+                       COALESCE(SUM(returned_amount), 0) AS total_returned_amount,
+                       COALESCE(SUM(paid_amount), 0) AS total_paid_supplier,
+                       COALESCE(SUM(balance_amount), 0) AS total_supplier_balance,
+                       COALESCE(SUM(supplier_credit), 0) AS total_supplier_credit,
+                       COUNT(CASE WHEN balance_amount > 0.001 THEN 1 END) AS pending_purchases_count
+                FROM purchases
+                WHERE is_deleted = 0
+                """)
+                purchase_stats = cur.fetchone()
 
     return render_template(
         "inventory.html",
@@ -2057,8 +2043,9 @@ def index():
     if not DATABASE_URL:
         return "DATABASE_URL environment variable is missing.", 500
     try:
-        services = get_cached_services()["active_list"]
-        dash_stats = get_today_dashboard_stats()
+        with db() as conn:
+            services = get_cached_services(conn=conn)["active_list"]
+            dash_stats = get_today_dashboard_stats(conn=conn)
         return render_template("index.html", services=services, today_total=dash_stats["today_total"], today_count=dash_stats["today_count"])
     except Exception as e:
         return f"Database query error: {str(e)}", 500
@@ -3213,6 +3200,13 @@ def history():
     end_date = request.args.get("end_date", "").strip()
     is_admin = bool(session.get("is_admin"))
 
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (ValueError, TypeError):
+        page = 1
+    limit = 50
+    offset = (page - 1) * limit
+
     start_d, end_d, period_label = get_period_date_range(period, start_date, end_date)
     if start_d and not start_date:
         start_date = start_d
@@ -3258,18 +3252,34 @@ def history():
                 query += " AND created_at < %s"
                 params.append(end_utc_iso)
 
-            # Period stats for the filtered period & search
-            cur.execute(f"""
-                SELECT COUNT(*) AS total_bills,
-                       COALESCE(SUM(total), 0) AS total_sales,
-                       COALESCE(SUM(paid), 0) AS total_collected,
-                       COALESCE(SUM(balance), 0) AS total_outstanding,
-                       COUNT(CASE WHEN balance > 0.001 THEN 1 END) AS unpaid_count
-                FROM ({query}) filtered_bills
-            """, tuple(params))
-            period_stats = cur.fetchone()
+            # Period stats: reuse lifetime metrics when default view is active (saves 1 remote query)
+            if not q and status_filter in ('all', '') and not start_d and not end_d:
+                period_stats = {
+                    "total_bills": lifetime_stats["total_count"],
+                    "total_sales": lifetime_stats["total_sales"],
+                    "total_collected": lifetime_stats["total_collected"],
+                    "total_outstanding": lifetime_stats["total_outstanding"],
+                    "unpaid_count": lifetime_stats["unpaid_count"]
+                }
+            else:
+                cur.execute(f"""
+                    SELECT COUNT(*) AS total_bills,
+                           COALESCE(SUM(total), 0) AS total_sales,
+                           COALESCE(SUM(paid), 0) AS total_collected,
+                           COALESCE(SUM(balance), 0) AS total_outstanding,
+                           COUNT(CASE WHEN balance > 0.001 THEN 1 END) AS unpaid_count
+                    FROM ({query}) filtered_bills
+                """, tuple(params))
+                period_stats = cur.fetchone()
 
-            cur.execute(query + " ORDER BY id DESC LIMIT 500", tuple(params))
+            total_bills = period_stats["total_bills"] if period_stats else 0
+            total_pages = max(1, (total_bills + limit - 1) // limit)
+            has_prev = page > 1
+            has_next = page < total_pages
+            start_index = (offset + 1) if total_bills > 0 else 0
+            end_index = min(offset + limit, total_bills)
+
+            cur.execute(query + " ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params + [limit, offset]))
             bills = cur.fetchall()
 
     return render_template(
@@ -3283,7 +3293,14 @@ def history():
         period_label=period_label,
         stats=lifetime_stats,
         period_stats=period_stats,
-        is_admin=is_admin
+        is_admin=is_admin,
+        page=page,
+        total_pages=total_pages,
+        total_bills=total_bills,
+        start_index=start_index,
+        end_index=end_index,
+        has_prev=has_prev,
+        has_next=has_next
     )
 
 # ── API: Collect Bill Payment (Staff & Admin) ──

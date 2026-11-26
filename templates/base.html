@@ -47,6 +47,21 @@
 </script>
 </head>
 <body>
+<style>
+  #nav-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    width: 0;
+    background: #9a214b;
+    z-index: 99999;
+    transition: width 0.35s cubic-bezier(0.1, 0.8, 0.2, 1), opacity 0.2s ease;
+    pointer-events: none;
+    box-shadow: 0 0 8px rgba(154, 33, 75, 0.6);
+  }
+</style>
+<div id="nav-progress"></div>
 <header class="topbar">
   <div class="brand">
     <a href="{{ url_for('index') }}" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 10px;">
@@ -114,6 +129,18 @@ if ('serviceWorker' in navigator) {
     const a = e.target.closest('nav a, .topbar a');
     if (a && a.href && a.origin === window.location.origin) {
       prefetch(a.href);
+    }
+  }, { passive: true });
+
+  // Instant navigation feedback indicator
+  document.addEventListener('click', function(e) {
+    const a = e.target.closest('a');
+    if (a && a.href && a.origin === window.location.origin && !a.target && !a.hasAttribute('download') && !a.href.includes('#') && !a.href.startsWith('javascript:')) {
+      const bar = document.getElementById('nav-progress');
+      if (bar) {
+        bar.style.width = '75%';
+        bar.style.opacity = '1';
+      }
     }
   }, { passive: true });
 })();
